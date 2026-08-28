@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r run typecheck",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "dev": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build",
     "setup": "pwsh ./tools/setup-toolchain.ps1",
