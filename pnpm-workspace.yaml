@@ -1,12 +1,15 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+# pnpm v11: settings 的正式位置（package.json 的 pnpm 字段与 .npmrc 的 store-dir 均不再读取）。
+# storeDir 固定在项目内，避免沙盒拦截用户目录/驱动器根的 store 写入。
+storeDir: .pnpm-store
 # pnpm v11: 用 allowBuilds 显式声明每个含 install script 的依赖。
-# M0 阶段不使用任何 native 模块（better-sqlite3 M3 起、@swc/core 与 esbuild 为 tsx/tsup/vite 间接依赖，
-# 它们均带 prebuild 二进制，无需本地 build）；simple-git-hooks 的 hook 由根 package.json 的 prepare 调用，
-# 不依赖其自身 install script。M3 引入 better-sqlite3 实际使用时改为 true。
+# better-sqlite3 自 M1 起实际使用（db 层），必须本地构建（prebuild-install 下载预编译 binding，失败则 node-gyp）。
+# @swc/core 与 esbuild 均带 prebuild 二进制，无需本地 build；simple-git-hooks 的 hook 由根 package.json 的 prepare 调用，
+# 不依赖其自身 install script。
 allowBuilds:
   '@swc/core': false
-  better-sqlite3: false
+  better-sqlite3: true
   esbuild: false
   simple-git-hooks: false

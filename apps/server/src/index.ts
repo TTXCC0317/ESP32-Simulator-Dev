@@ -1,8 +1,29 @@
-// @esp32-sim/server — 后端（Fastify + TS）
-// M0 占位：M1 起按《02-实施方案》§4 各里程碑实现
-//   - M1：Fastify + /api/health + /api/health/tools + SQLite + migration runner
-//   - M3：projects/files CRUD + catalog.service
-//   - M4：build.service + QemuManager + WS 网关
-//   - M5：GPIO 桥
+import { loadConfig } from './config/loader';
+import { openDatabase } from './db/client';
+import { runMigrations } from './db/migrator';
+import { buildApp } from './app';
 
-export const APP_NAME = 'ESP32 Simulator Server';
+/**
+ * 服务端入口：加载配置 → 打开 SQLite → 跑迁移 → 启动 HTTP（01-§5.1 分层）
+ */
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const db = openDatabase(config.db);
+  const { applied, total } = runMigrations(db);
+
+  const app = await buildApp({ config, db });
+  await app.listen({ port: config.server.port, host: config.server.host });
+  app.log.info(
+    {
+      migrations: { appliedNow: applied, total },
+      url: `http://${config.server.host}:${config.server.port}`,
+    },
+    'server started',
+  );
+}
+
+main().catch((err: unknown) => {
+  // 启动失败（配置缺失/端口占用等）：stderr 直出后退出，避免带病运行
+  console.error('[server] 启动失败:', err instanceof Error ? err.message : err);
+  process.exit(1);
+});

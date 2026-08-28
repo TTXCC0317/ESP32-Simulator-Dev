@@ -1,0 +1,39 @@
+/*
+ * 双主题 token（04-§11 全表）— 暗色为默认，亮色经 html[data-theme='light'] 覆盖。
+ * 切换实现：根节点 data-theme + CSS Variables，无组件重挂载。
+ * Tailwind 侧经 tailwind.config.js 映射为同名工具类（bg-panel / text-primary 等）。
+ */
+
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-border: #262b36;
+  --text-primary: #e8eaf0;
+  --text-secondary: #9aa3b2;
+  --accent: #3b82f6;
+  --success: #22c55e;
+  --warn: #eab308;
+  --danger: #ef4444;
+  --grid: #20242e;
+  /* 引脚 <circle> 描边色（05-§4.1 SVG 引脚标记约定），与 --text-secondary 同色族 */
+  --pin-stroke: #6b7280;
+  /* LED 熄灭填充（05-§4.1 var(--led-off, #333)）；运行态发光由画布叠加 Konva 节点实现 */
+  --led-off: #3a3f4a;
+  /* 连线色板（暗/亮一致，保证辨识度） */
+  --wire-palette: #e5484d, #46a758, #f5a623, #3b82f6, #b083f0, #00b5c7, #ff7ab6, #8d8d8d;
+}
+
+html[data-theme='light'] {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel-border: #e3e6ec;
+  --text-primary: #1a1d23;
+  --text-secondary: #5b6472;
+  --accent: #2563eb;
+  --success: #16a34a;
+  --warn: #ca8a04;
+  --danger: #dc2626;
+  --grid: #eceef2;
+  --pin-stroke: #9aa3b2;
+  --led-off: #c0c5cc;
+}

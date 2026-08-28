@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ESP32 Simulator</title>
+    <script>
+      // 主题初始化先于首帧渲染，避免暗→亮闪烁（04-§11：根节点 data-theme + CSS Variables）
+      try {
+        var raw = localStorage.getItem('esp32-sim.ui');
+        var theme = raw ? JSON.parse(raw).state.theme : null;
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme;
+        }
+      } catch (e) {
+        /* 忽略损坏的本地存储，保持默认暗色 */
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

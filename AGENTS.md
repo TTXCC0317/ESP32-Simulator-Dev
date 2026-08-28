@@ -28,10 +28,10 @@
 
 ### Git 分支（见 `documents/02-实施方案.md` §3.6）
 
-- `main` 受保护，禁直推，只接 PR；
-- 功能分支 `feat/<scope>-<topic>`，修复 `fix/<topic>`，文档 `docs/<topic>`；
+- **单人开发期（当前）**：允许直推 `main`；push 前本地 lint + typecheck + test 全绿，CI push 复核，红即修；
+- 大改动/实验性改动用功能分支 `feat/<scope>-<topic>`（修复 `fix/<topic>`，文档 `docs/<topic>`），多人期恢复 main 只接 PR；
 - Conventional Commits：`feat:`/`fix:`/`docs:`/`refactor:`/`test:`/`chore:`；
-- PR 模板在 `.github/pull_request_template.md`，必填"实现范围/测试项/验收点"三要素。
+- PR 模板在 `.github/pull_request_template.md`（多人期/大改动 PR 时必填"实现范围/测试项/验收点"三要素）。
 
 ### CI（见 §3.1.1）
 

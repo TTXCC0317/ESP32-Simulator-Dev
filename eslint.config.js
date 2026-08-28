@@ -43,6 +43,8 @@ export default [
     },
     rules: {
       ...tseslint.configs.strict.rules,
+      // typescript-eslint 官方建议：TS 文件关闭 no-undef（未定义标识符由 tsc 检查）
+      'no-undef': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
@@ -68,6 +70,8 @@ export default [
     rules: {
       ...reactPlugin.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
+      // React 17+ automatic JSX runtime（tsconfig jsx: react-jsx），无需 React in scope
+      'react/react-in-jsx-scope': 'off',
       'react-refresh/only-export-components': 'warn',
     },
     settings: {

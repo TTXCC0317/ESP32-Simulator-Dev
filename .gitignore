@@ -5,6 +5,9 @@ node_modules/
 .pnpm-store/
 .pnpm/
 
+# 本地 Node 工具链（沙盒无 Node 22，本地解压用，不入仓）
+.tools/
+
 # 构建产物
 dist/
 build/
