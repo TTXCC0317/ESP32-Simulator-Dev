@@ -8,11 +8,9 @@ jobs:
     name: Playwright E2E
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4 # 版本自动读 package.json 的 packageManager 字段，避免双源冲突
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
@@ -27,11 +25,9 @@ jobs:
     name: Golden Consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4 # 版本自动读 package.json 的 packageManager 字段，避免双源冲突
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
