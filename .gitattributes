@@ -1,0 +1,10 @@
+# 强制文本文件统一 LF 行尾（与 .prettierrc.json 的 endOfLine: lf 对齐，保证 CI/Linux 与本地 Windows 一致）
+* text=auto eol=lf
+
+# 二进制文件不参与行尾转换
+*.wasm binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.gz binary

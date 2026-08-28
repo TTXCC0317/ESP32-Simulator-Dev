@@ -1,0 +1,50 @@
+# 依赖
+node_modules/
+
+# pnpm 本地 store（沙盒环境绕过，不入仓）
+.pnpm-store/
+.pnpm/
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# 运行期数据（不入版本管理）
+data/
+logs/
+
+# 运行期配置（用户本机修改，不入版本管理；提供 .example 模板）
+config/app.json
+config/boards/*.local.json
+config/parts/*.local.json
+
+# WASM 产物（按 02 §5.3.1 经 Docker 构建后入库，开发期不入版本管理）
+*.wasm
+apps/web/src/sim/mpy/*.wasm
+apps/web/src/sim/mpy/*.wasm.mjs
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 测试与覆盖率
+coverage/
+.playwright-report/
+test-results/
+
+# 临时日志（上一会话 skill 安装日志等）
+skills-install.log
+*.local.log

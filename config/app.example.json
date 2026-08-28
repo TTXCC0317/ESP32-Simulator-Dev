@@ -1,0 +1,57 @@
+{
+  "server": {
+    "port": 3001,
+    "host": "127.0.0.1",
+    "staticDistPath": "../web/dist"
+  },
+  "db": {
+    "path": "data/simulator.db",
+    "wal": true
+  },
+  "dataDir": "data",
+  "builds": {
+    "dir": "data/builds",
+    "maxConcurrent": 2,
+    "timeoutMs": 300000,
+    "quotaMb": 2048
+  },
+  "flash": {
+    "dir": "data/flash",
+    "sessionTimeoutMs": 1800000,
+    "reconnectGraceMs": 60000,
+    "cleanupOrphanedAfterHours": 24
+  },
+  "tools": {
+    "arduinoCli": "arduino-cli",
+    "esp32Core": "esp32:esp32",
+    "esptool": "esptool",
+    "qemuXtensa": "",
+    "qemuRiscv32": ""
+  },
+  "ws": {
+    "maxConcurrentSessions": 4,
+    "msgRateLimitPerSec": 200,
+    "maxMsgBytes": 1048576,
+    "heartbeatIntervalMs": 15000,
+    "heartbeatLossThresholdMs": 45000,
+    "sessionIdleTimeoutMs": 60000,
+    "sessionMaxLifetimeMs": 1800000
+  },
+  "limits": {
+    "partsPerProject": 120,
+    "connectionsPerProject": 300,
+    "maxFileBytes": 1048576,
+    "filesPerProject": 50,
+    "diagramJsonMaxBytes": 2097152
+  },
+  "sim": {
+    "wasmMemMb": 256,
+    "speedOptions": [0.25, 0.5, 1, 2, 4]
+  },
+  "log": {
+    "level": "info",
+    "dir": "logs",
+    "rotateMb": 10,
+    "rotateKeep": 5
+  }
+}

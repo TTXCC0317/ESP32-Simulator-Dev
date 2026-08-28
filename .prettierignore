@@ -1,0 +1,35 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+
+# 运行期数据
+data/
+logs/
+
+# 运行期配置（不入 prettier 检查）
+config/app.json
+config/boards/*.local.json
+config/parts/*.local.json
+
+# WASM 产物
+*.wasm
+*.wasm.mjs
+apps/web/src/sim/mpy/
+
+# 测试与覆盖率
+coverage/
+.playwright-report/
+test-results/
+
+# 文档（markdown 不强制 prettier 格式）
+documents/
+
+# 临时
+skills-install.log
+*.local.log
+
+# pnpm-lock 已格式化，不重排
+pnpm-lock.yaml

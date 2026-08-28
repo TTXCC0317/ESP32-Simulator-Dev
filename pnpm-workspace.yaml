@@ -1,0 +1,12 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+# pnpm v11: 用 allowBuilds 显式声明每个含 install script 的依赖。
+# M0 阶段不使用任何 native 模块（better-sqlite3 M3 起、@swc/core 与 esbuild 为 tsx/tsup/vite 间接依赖，
+# 它们均带 prebuild 二进制，无需本地 build）；simple-git-hooks 的 hook 由根 package.json 的 prepare 调用，
+# 不依赖其自身 install script。M3 引入 better-sqlite3 实际使用时改为 true。
+allowBuilds:
+  '@swc/core': false
+  better-sqlite3: false
+  esbuild: false
+  simple-git-hooks: false
