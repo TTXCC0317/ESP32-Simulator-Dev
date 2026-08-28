@@ -2,37 +2,15 @@
   "name": "@esp32-sim/shared",
   "version": "0.0.0",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./ws-protocol": {
-      "types": "./dist/ws-protocol.d.ts",
-      "import": "./dist/ws-protocol.js"
-    },
-    "./worker-protocol": {
-      "types": "./dist/worker-protocol.d.ts",
-      "import": "./dist/worker-protocol.js"
-    },
-    "./circuit": {
-      "types": "./dist/circuit.d.ts",
-      "import": "./dist/circuit.js"
-    },
-    "./catalog": {
-      "types": "./dist/catalog.d.ts",
-      "import": "./dist/catalog.js"
-    },
-    "./engine": {
-      "types": "./dist/engine.d.ts",
-      "import": "./dist/engine.js"
-    }
+    ".": "./src/index.ts",
+    "./ws-protocol": "./src/ws-protocol.ts",
+    "./worker-protocol": "./src/worker-protocol.ts",
+    "./circuit": "./src/circuit.ts",
+    "./catalog": "./src/catalog.ts",
+    "./engine": "./src/engine.ts",
+    "./validation": "./src/validation.ts"
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

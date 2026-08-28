@@ -1,17 +1,20 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useUiStore } from '../stores/ui';
+import DiagramTab from './DiagramTab';
 
 const TABS = ['代码', 'diagram.json', '串口监视器', '逻辑分析仪'] as const;
+type Tab = (typeof TABS)[number];
 
 /**
- * BottomPanel 骨架（04-§2/§7）：Tab 条 + 默认 260px，可拖 180–480px，可折叠。
- * Tab 内容随 M3（代码/diagram）/M4（串口）/M11（逻辑分析仪）接入。
+ * BottomPanel（04-§2/§7）：Tab 条 + 默认 260px，可拖 180–480px，可折叠。
+ * M2 接入 diagram.json Tab；代码随 M3（Monaco）、串口随 M4、逻辑分析仪随 M11。
  */
 export default function BottomPanel() {
   const collapsed = useUiStore((s) => s.bottomCollapsed);
   const toggleBottom = useUiStore((s) => s.toggleBottom);
   const height = useUiStore((s) => s.bottomHeight);
   const setHeight = useUiStore((s) => s.setBottomHeight);
+  const [active, setActive] = useState<Tab>('diagram.json');
 
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
@@ -54,12 +57,13 @@ export default function BottomPanel() {
       />
 
       <div className="flex h-9 items-center gap-1 border-b border-panel-border px-2">
-        {TABS.map((t, i) => (
+        {TABS.map((t) => (
           <button
             key={t}
             type="button"
+            onClick={() => setActive(t)}
             className={
-              i === 0
+              t === active
                 ? 'rounded px-2 py-1 text-xs text-accent'
                 : 'rounded px-2 py-1 text-xs text-text-secondary hover:text-text-primary'
             }
@@ -78,9 +82,15 @@ export default function BottomPanel() {
         </button>
       </div>
 
-      <div className="flex flex-1 items-center justify-center text-xs text-text-secondary">
-        代码编辑器随 M3 接入（Monaco，04-§7.1）
-      </div>
+      {active === 'diagram.json' ? (
+        <DiagramTab />
+      ) : (
+        <div className="flex flex-1 items-center justify-center text-xs text-text-secondary">
+          {active === '代码' && '代码编辑器随 M3 接入（Monaco，04-§7.1）'}
+          {active === '串口监视器' && '串口监视器随 M4 接入（04-§7.2）'}
+          {active === '逻辑分析仪' && '逻辑分析仪随 M11 接入（04-§7.3）'}
+        </div>
+      )}
     </section>
   );
 }

@@ -54,6 +54,15 @@ export default [
     },
   },
 
+  // ---- 测试文件放宽 ----
+  // 测试代码中 `!` 是对已知返回值的断言辅助（配合 expect），放宽 strict 规则
+  {
+    files: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+
   // ---- 前端 React（apps/web）----
   {
     files: ['apps/web/**/*.ts', 'apps/web/**/*.tsx'],

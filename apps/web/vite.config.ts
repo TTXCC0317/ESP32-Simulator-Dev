@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
@@ -26,5 +27,9 @@ export default defineConfig({
   build: {
     // M3 接 Monaco 后按 04-§7.1 C3 加 manualChunks 单独切 chunk
     sourcemap: true,
+  },
+  test: {
+    // 默认 jsdom（L2 组件测试）；纯逻辑测试可用 // @vitest-environment node 覆盖
+    environment: 'jsdom',
   },
 });

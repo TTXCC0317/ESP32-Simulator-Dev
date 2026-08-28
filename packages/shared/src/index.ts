@@ -8,5 +8,6 @@
 export * from './circuit';
 export * from './catalog';
 export * from './engine';
+export * from './validation';
 export * from './ws-protocol';
 export * from './worker-protocol';

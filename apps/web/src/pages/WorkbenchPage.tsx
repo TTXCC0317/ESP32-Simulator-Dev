@@ -1,7 +1,7 @@
 import { useParams, Link } from 'react-router-dom';
 import TopBar from '../components/TopBar';
 import LibraryPanel from '../components/LibraryPanel';
-import CanvasStage from '../components/CanvasStage';
+import CircuitCanvas from '../canvas/CircuitCanvas';
 import InspectorPanel from '../components/InspectorPanel';
 import BottomPanel from '../components/BottomPanel';
 
@@ -21,7 +21,7 @@ export default function WorkbenchPage() {
       <TopBar projectName={projectId ?? ''} />
       <div className="relative flex min-h-0 flex-1">
         <LibraryPanel />
-        <CanvasStage />
+        <CircuitCanvas />
         <InspectorPanel />
       </div>
       <BottomPanel />
