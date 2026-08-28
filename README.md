@@ -11,15 +11,15 @@
 
 ### 环境要求
 
-| 组件        | 版本                           | 必需               |
-| ----------- | ------------------------------ | ------------------ |
-| Node.js     | 20 LTS                         | ✅                 |
-| pnpm        | 9+                             | ✅                 |
-| Git         | 2.x                            | ✅                 |
-| 浏览器      | Chrome / Edge 最新两个大版本   | ✅                 |
-| Python      | 3.11+                          | 仅引擎B（esptool） |
-| arduino-cli | 官方安装脚本                   | 仅引擎B            |
-| QEMU        | Espressif fork / lcgamboa fork | 仅引擎B            |
+| 组件        | 版本                                       | 必需               |
+| ----------- | ------------------------------------------ | ------------------ |
+| Node.js     | 22.13+（22 LTS，pnpm 11 最低要求）         | ✅                 |
+| pnpm        | 11+（corepack 按 packageManager 自动固定） | ✅                 |
+| Git         | 2.x                                        | ✅                 |
+| 浏览器      | Chrome / Edge 最新两个大版本               | ✅                 |
+| Python      | 3.11+                                      | 仅引擎B（esptool） |
+| arduino-cli | 官方安装脚本                               | 仅引擎B            |
+| QEMU        | Espressif fork / lcgamboa fork             | 仅引擎B            |
 
 > 引擎A 不依赖任何外部工具链，开箱即用；引擎B 缺工具链时入口置灰，引擎A 完整可用。
 
@@ -95,7 +95,7 @@ ESP32Simulator/
 | 层    | 选型                                                                                |
 | ----- | ----------------------------------------------------------------------------------- |
 | 前端  | React 18 + TypeScript + Vite + react-konva + Monaco + xterm.js + Zustand + Tailwind |
-| 后端  | Node.js 20 + Fastify + better-sqlite3 + zod + execa + pino                          |
+| 后端  | Node.js 22 + Fastify + better-sqlite3 + zod + execa + pino                          |
 | 引擎A | MicroPython 官方 webassembly port + 自定义 machine shim                             |
 | 引擎B | arduino-cli + esptool + QEMU（Espressif fork / lcgamboa fork）                      |
 | 工程  | pnpm Monorepo + GitHub Actions CI + Conventional Commits                            |

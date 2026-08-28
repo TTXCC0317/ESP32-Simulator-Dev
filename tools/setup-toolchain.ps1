@@ -36,12 +36,12 @@ try {
 }
 
 if (-not $nodeVersion) {
-  $report += '[FAIL] Node.js 未找到（要求 >=20 LTS）'
-  $report += '  安装指引：https://nodejs.org/ 下载 20 LTS（或更新 LTS）'
+  $report += '[FAIL] Node.js 未找到（要求 >=22.13，Node 22 LTS）'
+  $report += '  安装指引：https://nodejs.org/ 下载 22 LTS（或更新 LTS）'
   $ok = $false
-} elseif (-not (Test-VersionSatisfied -Current $nodeVersion -Required '20.0.0')) {
-  $report += "[FAIL] Node.js 版本 v$nodeVersion 过低（要求 >=20 LTS）"
-  $report += '  升级指引：https://nodejs.org/ 下载 20 LTS（或更新 LTS）'
+} elseif (-not (Test-VersionSatisfied -Current $nodeVersion -Required '22.13.0')) {
+  $report += "[FAIL] Node.js 版本 v$nodeVersion 过低（要求 >=22.13，pnpm 11 的最低要求）"
+  $report += '  升级指引：https://nodejs.org/ 下载 22 LTS（或更新 LTS）'
   $ok = $false
 } else {
   $report += "[OK]   Node.js v$nodeVersion"
@@ -59,11 +59,11 @@ try {
 }
 
 if (-not $pnpmVersion) {
-  $report += '[FAIL] pnpm 未找到（要求 >=9）'
+  $report += '[FAIL] pnpm 未找到（要求 >=11，经 corepack 按 package.json 的 packageManager 字段自动固定版本）'
   $report += '  安装指引：corepack enable && corepack prepare pnpm@latest --activate'
   $ok = $false
-} elseif (-not (Test-VersionSatisfied -Current $pnpmVersion -Required '9.0.0')) {
-  $report += "[FAIL] pnpm 版本 $pnpmVersion 过低（要求 >=9）"
+} elseif (-not (Test-VersionSatisfied -Current $pnpmVersion -Required '11.0.0')) {
+  $report += "[FAIL] pnpm 版本 $pnpmVersion 过低（要求 >=11）"
   $report += '  升级指引：corepack prepare pnpm@latest --activate'
   $ok = $false
 } else {

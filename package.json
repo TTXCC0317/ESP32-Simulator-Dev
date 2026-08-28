@@ -6,7 +6,7 @@
   "description": "网页版 ESP32 终端模拟器（参照 Wokwi）",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "lint": "eslint .",

@@ -16,7 +16,7 @@
 | 维度  | 选型                                                                        | 约束                                                           |
 | ----- | --------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | 前端  | React 18 + TS + Vite + react-konva + Monaco + xterm.js + Zustand + Tailwind | 不引入 redux/mobx；状态走 zustand                              |
-| 后端  | Node 20 + Fastify + better-sqlite3 + zod + execa + pino                     | 不引入 express/sequelize；ORM 直接用 better-sqlite3 同步 API   |
+| 后端  | Node 22 + Fastify + better-sqlite3 + zod + execa + pino                     | 不引入 express/sequelize；ORM 直接用 better-sqlite3 同步 API   |
 | 引擎A | MicroPython webassembly port + 自定义 machine shim                          | wasm 产物入库 `apps/web/src/sim/mpy/`，不在开发机装 Emscripten |
 | 引擎B | arduino-cli + QEMU（Espressif fork / lcgamboa fork）                        | 作为外部进程 spawn，不链接；命令参数必须数组化（execa）        |
 | 测试  | vitest + @testing-library/react + Playwright + fastify.inject               | 不引入 jest                                                    |
