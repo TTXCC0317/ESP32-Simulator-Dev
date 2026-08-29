@@ -59,7 +59,14 @@ export interface FirmwareBinary {
 export type FirmwareInput = FirmwareSourceFiles | FirmwareBinary;
 
 export type InputEvent =
-  | { type: 'pin.level'; partId: PartId; pin: string; level: 0 | 1 }
+  | {
+      type: 'pin.level';
+      partId: PartId;
+      pin: string;
+      level: 0 | 1;
+      /** 按键松开（05-§1.4）：忽略 level，引擎侧解除注入并回退 pull 电平 */
+      release?: boolean;
+    }
   | { type: 'analog.value'; partId: PartId; pin: string; value: number } // 0..4095
   | { type: 'sensor.data'; partId: PartId; data: Record<string, number> } // {temp: 25.5, hum: 60}
   | { type: 'uart.tx'; bytes: Uint8Array; port?: 0 | 1 | 2 };
@@ -115,6 +122,7 @@ export const inputEventSchema = z.discriminatedUnion('type', [
     partId: z.string().min(1),
     pin: z.string().min(1),
     level: z.union([z.literal(0), z.literal(1)]),
+    release: z.boolean().optional(), // 按键松开：level 被忽略
   }),
   z.object({
     type: z.literal('analog.value'),

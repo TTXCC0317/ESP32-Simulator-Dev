@@ -1,13 +1,16 @@
 /*
  * machine shim（MicroPython webassembly port 自定义 C 模块）
  *
- * 《03-核心模块详细设计》§3.2 转发表 M4 子集：
+ * 《03-核心模块详细设计》§3.2 转发表（M4 串口级 + M5 输入闭环）：
  *   Pin(n, Pin.OUT) / Pin.value(v)  → js_gpio_write  → globalThis.__mpyMachine.gpioWrite
  *   Pin.value()                     → js_gpio_read   → globalThis.__mpyMachine.gpioRead
+ *   Pin(n, Pin.IN, pull)            → js_gpio_configure → __mpyMachine.gpioConfigure（claimInput + pull）
+ *   Pin.irq(handler, trigger)       → 回调经 mp_sched_schedule；
+ *                                     JS 侧电平变化调 mp_js_gpio_inject(pin, level) 触发
  *   UART(0, baud) / write()         → js_uart_tx     → globalThis.__mpyMachine.uartWrite
  *   UART.read()/any()               → js_uart_rx/js_uart_rx_avail（JS 侧接收队列）
  *
- * Pin 输入（pull/irq）M5 交付（02-§4 M5）；I2C/SPI/PWM/ADC 后续里程碑逐个补齐。
+ * I2C/SPI/PWM/ADC 后续里程碑逐个补齐（02-§4 M7/M8/M9）。
  * JS 侧接线见 apps/web/src/sim/mpy/engine.ts（MachineShim）。
  */
 
@@ -16,6 +19,8 @@
 
 #include "py/runtime.h"
 #include "py/objstr.h"
+/* mp_sched_schedule 声明于 py/runtime.h（v1.26 无独立 sched.h）：irq 回调在
+ * 主 MicroPython 任务上下文（scheduler）中执行，安全持锁与 GC */
 
 // ---- JS 桥（经 globalThis.__mpyMachine 回调，由 MachineShim 注册） ----
 
@@ -27,6 +32,12 @@ EM_JS(void, js_gpio_write, (int pin, int level), {
 EM_JS(int, js_gpio_read, (int pin), {
     const bridge = globalThis.__mpyMachine;
     return bridge && bridge.gpioRead ? bridge.gpioRead(pin) : 0;
+});
+
+/** Pin 构造上报（make_new）：JS 侧 claimInput + pull 语义 + irq 订阅（M5） */
+EM_JS(void, js_gpio_configure, (int pin, int mode, int pull), {
+    const bridge = globalThis.__mpyMachine;
+    if (bridge && bridge.gpioConfigure) bridge.gpioConfigure(pin, mode, pull);
 });
 
 EM_JS(void, js_uart_tx, (int port, const uint8_t *data, int len), {
@@ -63,7 +74,14 @@ typedef struct _machine_pin_obj_t {
     mp_int_t id;
     mp_int_t mode;
     mp_int_t pull;
+    mp_obj_t irq_handler;
+    mp_int_t irq_trigger;
 } machine_pin_obj_t;
+
+/* Pin 实例注册表：mp_js_gpio_inject 按引脚号查找 irq 回调（0 初始化） */
+#define MACHINE_PIN_MAX 64
+static machine_pin_obj_t *pin_registry[MACHINE_PIN_MAX];
+static int pin_last_level[MACHINE_PIN_MAX];
 
 static void machine_pin_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
     machine_pin_obj_t *self = MP_OBJ_TO_PTR(self_in);
@@ -82,15 +100,31 @@ static mp_obj_t machine_pin_value(size_t n_args, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(machine_pin_value_obj, 1, 2, machine_pin_value);
 
+/** Pin.irq(handler=None, trigger=IRQ_RISING|IRQ_FALLING)：注册电平变化回调（M5） */
+static mp_obj_t machine_pin_irq(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    machine_pin_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    static const mp_arg_t allowed[] = {
+        { MP_QSTR_handler, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_trigger, MP_ARG_INT, {.u_int = 3} }, /* 默认 RISING|FALLING */
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed), allowed, vals);
+    self->irq_handler = vals[0].u_obj;
+    self->irq_trigger = vals[1].u_int;
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(machine_pin_irq_obj, 1, machine_pin_irq);
+
 static const mp_rom_map_elem_t machine_pin_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_value), MP_ROM_PTR(&machine_pin_value_obj) },
+    { MP_ROM_QSTR(MP_QSTR_irq), MP_ROM_PTR(&machine_pin_irq_obj) },
     // 常量（官方 ports/bare-arm 习惯值；IN/OUT 与 esp32 port 一致）
     { MP_ROM_QSTR(MP_QSTR_IN), MP_ROM_INT(0) },
     { MP_ROM_QSTR(MP_QSTR_OUT), MP_ROM_INT(1) },
     { MP_ROM_QSTR(MP_QSTR_PULL_NONE), MP_ROM_INT(0) },
     { MP_ROM_QSTR(MP_QSTR_PULL_UP), MP_ROM_INT(2) },
     { MP_ROM_QSTR(MP_QSTR_PULL_DOWN), MP_ROM_INT(1) },
-    // IRQ 常量预留（M5 实现回调）
+    // IRQ 触发掩码位（rising=1 falling=2；M5 irq 回调已实现）
     { MP_ROM_QSTR(MP_QSTR_IRQ_RISING), MP_ROM_INT(1) },
     { MP_ROM_QSTR(MP_QSTR_IRQ_FALLING), MP_ROM_INT(2) },
 };
@@ -103,6 +137,14 @@ static mp_obj_t machine_pin_make_new(const mp_obj_type_t *type, size_t n_args, s
     self->id = mp_obj_get_int(args[0]);
     self->mode = (n_args >= 2) ? mp_obj_get_int(args[1]) : 1;
     self->pull = (n_args >= 3) ? mp_obj_get_int(args[2]) : 0;
+    self->irq_handler = mp_const_none;
+    self->irq_trigger = 3; /* 默认 RISING|FALLING */
+    if (self->id >= 0 && self->id < MACHINE_PIN_MAX) {
+        pin_registry[self->id] = self;
+        pin_last_level[self->id] = 0;
+        /* 上报 JS：输入模式 claimInput（pull 语义）+ onChange 订阅（irq 注入） */
+        js_gpio_configure((int)self->id, (int)self->mode, (int)self->pull);
+    }
     return MP_OBJ_FROM_PTR(self);
 }
 
@@ -213,3 +255,31 @@ const mp_obj_module_t machine_module = {
 };
 
 MP_REGISTER_MODULE(MP_QSTR_machine, machine_module);
+
+// ---- JS → C 注入入口（engine.ts 订阅 PinBus.onChange 后调用；链接导出见 build.sh） ----
+
+/**
+ * JS 注入引脚电平变化：与上次电平比较得出沿，匹配 irq_trigger 时经
+ * mp_sched_schedule 调度回调（回调收到 MP_OBJ_SMALL_INT(level)）。
+ * 无注册回调 / 无沿变化时静默（仅更新电平轨迹）。
+ */
+void mp_js_gpio_inject(int pin, int level) {
+    if (pin < 0 || pin >= MACHINE_PIN_MAX) {
+        return;
+    }
+    const int lv = level ? 1 : 0;
+    const int prev = pin_last_level[pin];
+    pin_last_level[pin] = lv;
+    machine_pin_obj_t *self = pin_registry[pin];
+    if (self == NULL || self->irq_handler == mp_const_none) {
+        return;
+    }
+    if (prev == lv) {
+        return;
+    }
+    const int rising = (prev == 0 && lv == 1);
+    const int falling = (prev == 1 && lv == 0);
+    if ((rising && (self->irq_trigger & 1)) || (falling && (self->irq_trigger & 2))) {
+        (void)mp_sched_schedule(self->irq_handler, MP_OBJ_NEW_SMALL_INT(lv));
+    }
+}

@@ -27,7 +27,7 @@ Module['ready'] = new Promise((resolve, reject) => {
   readyPromiseResolve = resolve;
   readyPromiseReject = reject;
 });
-["_free","_malloc","_mp_js_init","_mp_js_repl_init","_mp_js_repl_process_char","_mp_hal_get_interrupt_char","_mp_sched_keyboard_interrupt","_mp_js_do_exec","_mp_js_do_exec_async","_mp_js_do_import","_mp_js_register_js_module","_proxy_c_free_obj","_proxy_c_init","_proxy_c_to_js_call","_proxy_c_to_js_delete_attr","_proxy_c_to_js_dir","_proxy_c_to_js_get_array","_proxy_c_to_js_get_dict","_proxy_c_to_js_get_iter","_proxy_c_to_js_get_type","_proxy_c_to_js_has_attr","_proxy_c_to_js_iternext","_proxy_c_to_js_lookup_attr","_proxy_c_to_js_resume","_proxy_c_to_js_store_attr","_proxy_convert_mp_to_js_obj_cside","_memory","___indirect_function_table","_proxy_convert_mp_to_js_then_js_to_mp_obj_jsside","_proxy_convert_mp_to_js_then_js_to_js_then_js_to_mp_obj_jsside","_js_get_proxy_js_ref_info","_has_attr","_lookup_attr","_store_attr","_call0","_call1","_call2","_calln","_call0_kwarg","_call1_kwarg","_js_reflect_construct","_js_get_iter","_js_iter_next","_js_subscr_load","_js_subscr_store","_proxy_js_free_obj","_js_check_existing","_js_get_error_info","_js_then_resolve","_js_then_reject","_js_then_continue","_create_promise","_js_gpio_write","_js_gpio_read","_js_uart_tx","_js_uart_rx","_js_uart_rx_avail","_fflush","___start_em_js","___stop_em_js","onRuntimeInitialized"].forEach((prop) => {
+["_free","_malloc","_mp_js_init","_mp_js_repl_init","_mp_js_repl_process_char","_mp_hal_get_interrupt_char","_mp_sched_keyboard_interrupt","_mp_js_do_exec","_mp_js_do_exec_async","_mp_js_do_import","_mp_js_register_js_module","_proxy_c_free_obj","_proxy_c_init","_proxy_c_to_js_call","_proxy_c_to_js_delete_attr","_proxy_c_to_js_dir","_proxy_c_to_js_get_array","_proxy_c_to_js_get_dict","_proxy_c_to_js_get_iter","_proxy_c_to_js_get_type","_proxy_c_to_js_has_attr","_proxy_c_to_js_iternext","_proxy_c_to_js_lookup_attr","_proxy_c_to_js_resume","_proxy_c_to_js_store_attr","_proxy_convert_mp_to_js_obj_cside","_memory","___indirect_function_table","_proxy_convert_mp_to_js_then_js_to_mp_obj_jsside","_proxy_convert_mp_to_js_then_js_to_js_then_js_to_mp_obj_jsside","_js_get_proxy_js_ref_info","_has_attr","_lookup_attr","_store_attr","_call0","_call1","_call2","_calln","_call0_kwarg","_call1_kwarg","_js_reflect_construct","_js_get_iter","_js_iter_next","_js_subscr_load","_js_subscr_store","_proxy_js_free_obj","_js_check_existing","_js_get_error_info","_js_then_resolve","_js_then_reject","_js_then_continue","_create_promise","_js_gpio_write","_js_gpio_read","_js_gpio_configure","_js_uart_tx","_js_uart_rx","_js_uart_rx_avail","_fflush","___start_em_js","___stop_em_js","onRuntimeInitialized"].forEach((prop) => {
   if (!Object.getOwnPropertyDescriptor(Module['ready'], prop)) {
     Object.defineProperty(Module['ready'], prop, {
       get: () => abort('You are getting ' + prop + ' on the Promise object, instead of the instance. Use .then() to get called back with the instance, see the MODULARIZE docs in src/settings.js'),
@@ -1035,6 +1035,7 @@ function js_then_continue(jsref,py_resume,resolve,reject,out) { const py_resume_
 function create_promise(out_set,out_promise) { const out_set_js = proxy_convert_mp_to_js_obj_jsside(out_set); const promise = new Promise(out_set_js); proxy_convert_js_to_mp_obj_jsside(promise, out_promise); }
 function js_gpio_write(pin,level) { const bridge = globalThis.__mpyMachine; if (bridge && bridge.gpioWrite) bridge.gpioWrite(pin, level); }
 function js_gpio_read(pin) { const bridge = globalThis.__mpyMachine; return bridge && bridge.gpioRead ? bridge.gpioRead(pin) : 0; }
+function js_gpio_configure(pin,mode,pull) { const bridge = globalThis.__mpyMachine; if (bridge && bridge.gpioConfigure) bridge.gpioConfigure(pin, mode, pull); }
 function js_uart_tx(port,data,len) { const bridge = globalThis.__mpyMachine; if (bridge && bridge.uartWrite && len > 0) { bridge.uartWrite(port, HEAPU8.slice(data, data + len)); } }
 function js_uart_rx(port,buf,maxlen) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.uartRead || maxlen <= 0) return 0; const bytes = bridge.uartRead(port, maxlen); if (!bytes || !bytes.length) return 0; const n = Math.min(bytes.length, maxlen); HEAPU8.set(bytes.subarray(0, n), buf); return n; }
 function js_uart_rx_avail(port) { const bridge = globalThis.__mpyMachine; return bridge && bridge.uartAvailable ? bridge.uartAvailable(port) : 0; }
@@ -5059,6 +5060,7 @@ var wasmImports = {
   js_get_error_info: js_get_error_info,
   js_get_iter: js_get_iter,
   js_get_proxy_js_ref_info: js_get_proxy_js_ref_info,
+  js_gpio_configure: js_gpio_configure,
   js_gpio_read: js_gpio_read,
   js_gpio_write: js_gpio_write,
   js_iter_next: js_iter_next,
@@ -5140,8 +5142,8 @@ var _asyncify_start_unwind = createExportWrapper('asyncify_start_unwind');
 var _asyncify_stop_unwind = createExportWrapper('asyncify_stop_unwind');
 var _asyncify_start_rewind = createExportWrapper('asyncify_start_rewind');
 var _asyncify_stop_rewind = createExportWrapper('asyncify_stop_rewind');
-var ___start_em_js = Module['___start_em_js'] = 121724;
-var ___stop_em_js = Module['___stop_em_js'] = 128560;
+var ___start_em_js = Module['___start_em_js'] = 121772;
+var ___stop_em_js = Module['___stop_em_js'] = 128760;
 function invoke_ii(index,a1) {
   var sp = stackSave();
   try {

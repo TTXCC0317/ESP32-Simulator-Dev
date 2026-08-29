@@ -196,7 +196,16 @@ export class PinBus {
     const token = nextToken++;
     net.inputReaders.add(token);
     // 同网络多输入统一 pull：取最后一次声明（固件约定一致时不影响）
-    if (net.fixed === null && net.drivers.size === 0) net.pull = pull;
+    if (net.fixed === null && net.drivers.size === 0) {
+      net.pull = pull;
+      // 浮空网络的逻辑电平初始化为 pull 值（与 read() 语义一致），
+      // 否则 pull=up 注入 0 时无沿变化，irq 丢失按下沿（M5）
+      const lvl: Level = pull === 'up' ? 1 : 0;
+      if (net.level !== lvl && !net.injected) {
+        net.level = lvl;
+        this.emitLevel(net, pinRef);
+      }
+    }
     return token;
   }
 
@@ -234,6 +243,33 @@ export class PinBus {
     const net = this.netOf(pinRef);
     if (net.fixed !== null) return; // 电源网络不可注入
     net.injected = true;
+    if (net.level !== level) {
+      net.level = level;
+      this.emitLevel(net, pinRef);
+    }
+  }
+
+  /**
+   * 注入解除（05-§1.4 按键松开）：清除注入态，电平回退——
+   * 有输出驱动 → 恢复驱动记录电平（一致时）；否则按 pull 决定（up=1，否则 0）；变化才广播。
+   */
+  releasePin(pinRef: PinRef): void {
+    const net = this.netOf(pinRef);
+    if (net.fixed !== null || !net.injected) return;
+    net.injected = false;
+    let level: Level = net.pull === 'up' ? 1 : 0;
+    if (net.drivers.size > 0) {
+      // net.level 可能已被注入覆盖，恢复值取驱动 token 记录（全部一致时）
+      const first = net.drivers.values().next().value as Level;
+      let consistent = true;
+      for (const l of net.drivers.values()) {
+        if (l !== first) {
+          consistent = false;
+          break;
+        }
+      }
+      if (consistent) level = first;
+    }
     if (net.level !== level) {
       net.level = level;
       this.emitLevel(net, pinRef);

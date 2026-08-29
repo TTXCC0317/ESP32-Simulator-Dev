@@ -75,7 +75,7 @@ fi
 # 只导出真实存在的符号（emcc 对未知导出符号会链接失败）
 echo "=== probe exported API symbols ==="
 EXPORTS="_main"
-for fn in mp_js_init mp_js_do_str mp_js_init_repl mp_js_process_char mp_keyboard_interrupt mp_js_register_js_module; do
+for fn in mp_js_init mp_js_do_str mp_js_init_repl mp_js_process_char mp_keyboard_interrupt mp_js_register_js_module mp_js_gpio_inject; do
   if grep -rqs "\b$fn(" /mpy/py/*.c /mpy/py/*.h "$PORT"/*.c "$PORT"/*.h; then
     EXPORTS="$EXPORTS,_$fn"
   fi

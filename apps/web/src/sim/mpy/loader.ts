@@ -46,6 +46,8 @@ export interface MpyModule {
   stringToUTF8: (str: string, outPtr: number, maxBytes: number) => void;
   // 停止中断（v1.26 改名自 mp_keyboard_interrupt，port Makefile 已导出）
   _mp_sched_keyboard_interrupt?: () => void;
+  // GPIO 注入入口（M5：PinBus onChange → wasm irq 回调，machine.c 定义）
+  _mp_js_gpio_inject?: (pin: number, level: number) => void;
 }
 
 /** glue loadMicroPython 返回的官方 API 面（仅取所需字段） */
@@ -65,6 +67,7 @@ export interface LoadedMpy {
     doExec: boolean;
     fs: boolean;
     interrupt: boolean;
+    inject: boolean;
   };
 }
 
@@ -101,6 +104,7 @@ export async function loadMicroPython(): Promise<LoadedMpy> {
     doExec: typeof mod.ccall === 'function',
     fs: mp.FS !== undefined,
     interrupt: typeof mod._mp_sched_keyboard_interrupt === 'function',
+    inject: typeof mod._mp_js_gpio_inject === 'function',
   };
 
   return {

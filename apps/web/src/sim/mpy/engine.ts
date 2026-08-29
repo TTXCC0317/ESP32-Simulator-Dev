@@ -46,6 +46,8 @@ export class MpyWasmEngine implements SimulationEngine {
   private gpioRefs = new Map<number, PinRef>();
   private outputTokens = new Map<number, number>();
   private inputTokens = new Map<number, number>();
+  /** 输入引脚 PinBus.onChange 订阅（电平变化 → wasm irq 注入），pin → 取消函数 */
+  private irqUnsubs = new Map<number, () => void>();
   /** 串口发送队列（主线程 uart.tx 输入 → 固件 UART.read） */
   private rxQueue = new Map<number, number[]>();
 
@@ -87,7 +89,13 @@ export class MpyWasmEngine implements SimulationEngine {
     switch (ev.type) {
       case 'pin.level':
         try {
-          this.bus.injectPin(`${ev.partId}:${ev.pin}` as PinRef, ev.level);
+          const ref = `${ev.partId}:${ev.pin}` as PinRef;
+          // release（按键松开）：清除注入态，回退 pull/fixed 决定的电平（05-§1.4）
+          if (ev.release) {
+            this.bus.releasePin(ref);
+          } else {
+            this.bus.injectPin(ref, ev.level);
+          }
         } catch (err) {
           this.log('warn', `输入注入失败：${err instanceof Error ? err.message : String(err)}`);
         }
@@ -233,6 +241,8 @@ export class MpyWasmEngine implements SimulationEngine {
       // 左右列同名引脚重复出现 → 后写覆盖，PinRef 一致无影响
       this.gpioRefs.set(pin.gpio, `${boardPart.id}:${pin.name}` as PinRef);
     }
+    for (const unsub of this.irqUnsubs.values()) unsub();
+    this.irqUnsubs.clear();
     this.outputTokens.clear();
     this.inputTokens.clear();
     this.rxQueue.clear();
@@ -241,8 +251,26 @@ export class MpyWasmEngine implements SimulationEngine {
   }
 
   dispose(): void {
+    for (const unsub of this.irqUnsubs.values()) unsub();
+    this.irqUnsubs.clear();
     this.setState('idle');
     this.handlers.clear();
+  }
+
+  /**
+   * 输入引脚电平变化 → wasm 注入（M5 irq 链路）：
+   * PinBus.onChange（网络级）→ mp_js_gpio_inject(pin, level) → mp_sched_schedule 回调。
+   * 产物缺少导出（旧 wasm）时仅告警一次，轮询式 Pin.value() 读取不受影响。
+   */
+  private subscribeIrq(pin: number, ref: PinRef): void {
+    if (this.irqUnsubs.has(pin)) return;
+    const inject = this.wasm?.mod._mp_js_gpio_inject;
+    if (!inject) {
+      this.log('warn', 'wasm 产物缺少 mp_js_gpio_inject（旧产物），Pin.irq 不可用');
+      return;
+    }
+    const unsub = this.bus.onChange(ref, (level) => inject(pin, level));
+    this.irqUnsubs.set(pin, unsub);
   }
 
   // ---- machine shim JS 桥（machine.c EM_JS 回调，见 03-§3.2 转发表） ----
@@ -271,6 +299,15 @@ export class MpyWasmEngine implements SimulationEngine {
           this.inputTokens.set(pin, this.bus.claimInput(ref, 'none'));
         }
         return this.bus.read(ref) as Level;
+      },
+      // Pin(n, Pin.IN, pull) make_new 上报（machine.c js_gpio_configure）：
+      // 注册输入读者 + pull 语义 + 订阅电平变化回注 wasm（irq 触发）
+      gpioConfigure: (pin: number, mode: number, pull: number): void => {
+        const ref = this.gpioRefs.get(pin);
+        if (!ref || mode !== 0) return; // 仅输入模式需要注册
+        if (this.inputTokens.has(pin) || this.outputTokens.has(pin)) return;
+        this.inputTokens.set(pin, this.bus.claimInput(ref, PULL_BY_CONST[pull] ?? 'none'));
+        this.subscribeIrq(pin, ref);
       },
       uartWrite: (port: number, bytes: Uint8Array): void => {
         const p = (port >= 0 && port <= 2 ? port : 0) as 0 | 1 | 2;

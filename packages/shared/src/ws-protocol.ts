@@ -27,6 +27,8 @@ export const inputPinSchema = z.object({
     partId: z.string().min(1),
     pin: z.string().min(1),
     level: z.union([z.literal(0), z.literal(1)]),
+    /** 按键松开（05-§1.4）：GPIO 桥解除注入，固件侧回退 pull 电平；level 被忽略 */
+    release: z.boolean().optional(),
   }),
 });
 

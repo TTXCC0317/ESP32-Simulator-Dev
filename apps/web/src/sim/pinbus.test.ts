@@ -237,3 +237,56 @@ describe('PinBus 注入与模拟值', () => {
     expect(events).toEqual([{ duty: 512, freq: 1000 }]);
   });
 });
+
+describe('PinBus 注入解除（M5 releasePin，05-§1.4 按键松开）', () => {
+  it('释放后回退 pull 电平并广播（pull=up：claim 广播 1 → 注入 0 → release → 1）', () => {
+    const bus = new PinBus();
+    bus.load(makeCircuit(), board, partDefs);
+    const cb = vi.fn();
+    bus.onChange('btn1:1.l', cb);
+    bus.claimInput('btn1:1.l', 'up');
+    // claim 时浮空网络初始化为 pull 电平并广播（0→1，保证后续注入有沿变化）
+    expect(cb).toHaveBeenNthCalledWith(1, 1);
+    bus.injectPin('btn1:1.l', 0);
+    expect(bus.read('btn1:1.l')).toBe(0);
+    bus.releasePin('btn1:1.l');
+    expect(bus.read('btn1:1.l')).toBe(1);
+    expect(cb).toHaveBeenCalledTimes(3);
+    expect(cb).toHaveBeenLastCalledWith(1);
+  });
+
+  it('释放后 pull=none 回 0；未注入网络 release 无操作', () => {
+    const bus = new PinBus();
+    bus.load(makeCircuit(), board, partDefs);
+    const cb = vi.fn();
+    bus.onChange('btn1:1.l', cb);
+    bus.injectPin('btn1:1.l', 1);
+    bus.releasePin('btn1:1.l');
+    expect(bus.read('btn1:1.l')).toBe(0);
+    // 再次 release：已无注入态，不广播
+    bus.releasePin('btn1:1.l');
+    expect(cb).toHaveBeenCalledTimes(2);
+  });
+
+  it('网络有输出驱动时 release 保持驱动电平', () => {
+    const bus = new PinBus();
+    bus.load(makeCircuit([gpio4ToLed]), board, partDefs);
+    bus.claimInput('led1:A', 'up');
+    const t = bus.claimOutput('esp:GPIO4');
+    bus.write(t, 1);
+    bus.injectPin('led1:A', 0);
+    bus.releasePin('led1:A');
+    expect(bus.read('led1:A')).toBe(1); // 驱动电平保持，不回 pull
+  });
+
+  it('电源网络 release 无操作（GND 固定电平不可解除）', () => {
+    const bus = new PinBus();
+    bus.load(
+      makeCircuit([{ id: 'w2', source: 'led1:C', target: 'esp:GND.1', color: 'black', path: [] }]),
+      board,
+      partDefs,
+    );
+    bus.releasePin('led1:C');
+    expect(bus.read('led1:C')).toBe(0);
+  });
+});
