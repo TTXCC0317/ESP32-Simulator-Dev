@@ -1,0 +1,10 @@
+# machine-shim 下的 C 代码仅在 emsdk 容器内编译（02-§5.3.1，AGENTS 硬约束：
+# 开发机不装 Emscripten）。emscripten.h 与 py/*.h 只存在于容器内，宿主机
+# clangd 无法解析 → 报 "file not found" 及数十个级联错误，均为环境误报
+# （代码已在 M4 容器内构建验证通过，产物 apps/web/src/sim/mpy/micropython.wasm）。
+# 处理：对该路径禁用 clangd 全部诊断（Suppress '*' 为官方机制；
+# 项目级 .clangd 的 PathMatch 按相对本文件目录、正斜杠、完全匹配）。
+If:
+  PathMatch: (.*mpy-build/)?machine-shim/.*
+Diagnostics:
+  Suppress: ['*']
