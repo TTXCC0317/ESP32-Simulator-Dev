@@ -1,13 +1,17 @@
+import { join } from 'node:path';
 import { loadConfig } from './config/loader';
 import { openDatabase } from './db/client';
 import { runMigrations } from './db/migrator';
 import { buildApp } from './app';
+import { appRoot } from './utils/app-root';
 
 /**
  * 服务端入口：加载配置 → 打开 SQLite → 跑迁移 → 启动 HTTP（01-§5.1 分层）
+ *
+ * config/ 与 catalog 锚定仓库根（appRoot 探测），data/ 相对 cwd（单机开发固定 apps/server/data）。
  */
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = loadConfig(join(appRoot(), 'config', 'app.json'));
   const db = openDatabase(config.db);
   const { applied, total } = runMigrations(db);
 

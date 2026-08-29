@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 380" width="240" height="380">
+  <!-- board-esp32-devkit-c-v4（05-§1.1/§4.1）：封装 240×380；左列 18 脚 + 右列 19 脚，
+       左右同名引脚（VP/VN/EN）按 §4.1 只在左列绘制一次 circle -->
+  <rect x="4" y="4" width="232" height="372" rx="8" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <!-- 模组与天线区 -->
+  <rect x="70" y="14" width="100" height="46" rx="6" fill="#173625" stroke="var(--panel-border, #262b36)"/>
+  <rect x="78" y="20" width="84" height="18" rx="3" fill="#245239"/>
+  <text x="120" y="52" text-anchor="middle" font-size="9" fill="#9aa3b2">ESP32-WROOM-32</text>
+  <!-- USB -->
+  <rect x="98" y="356" width="44" height="18" rx="3" fill="var(--led-off, #3a3f4a)" stroke="var(--panel-border, #262b36)"/>
+  <text x="120" y="200" text-anchor="middle" font-size="12" fill="#9aa3b2">ESP32</text>
+  <text x="120" y="216" text-anchor="middle" font-size="12" fill="#9aa3b2">DevKit-C V4</text>
+
+  <!-- 左列引脚（x=8，自上而下 18 脚，y=32 起、间距 18） -->
+  <circle id="pin-EN" cx="8" cy="32" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-VP" cx="8" cy="50" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-VN" cx="8" cy="68" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO34" cx="8" cy="86" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO35" cx="8" cy="104" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO32" cx="8" cy="122" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO33" cx="8" cy="140" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO25" cx="8" cy="158" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO26" cx="8" cy="176" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO27" cx="8" cy="194" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO14" cx="8" cy="212" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO12" cx="8" cy="230" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GND.2" cx="8" cy="248" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO13" cx="8" cy="266" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-D2" cx="8" cy="284" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-D3" cx="8" cy="302" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-CMD" cx="8" cy="320" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-5V" cx="8" cy="338" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+
+  <!-- 右列引脚（x=232，自上而下；右列 VP/VN/EN 同名不重复绘制） -->
+  <circle id="pin-GND.1" cx="232" cy="32" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO4" cx="232" cy="50" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO0" cx="232" cy="68" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO2" cx="232" cy="86" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO15" cx="232" cy="104" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO5" cx="232" cy="122" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO18" cx="232" cy="140" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO19" cx="232" cy="158" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO21" cx="232" cy="176" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO22" cx="232" cy="194" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO23" cx="232" cy="212" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO1" cx="232" cy="230" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO3" cx="232" cy="248" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO16" cx="232" cy="266" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GPIO17" cx="232" cy="284" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-3V3" cx="232" cy="302" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

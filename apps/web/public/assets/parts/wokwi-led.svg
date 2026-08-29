@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 62" width="40" height="62">
+  <!-- wokwi-led（05-§4.1）：viewBox=封装 40×62；引脚 circle id 与 §1.2 引脚表一致 -->
+  <line x1="20" y1="6" x2="20" y2="56" stroke="#b7bcc6" stroke-width="2"/>
+  <ellipse cx="20" cy="32" rx="14" ry="18" fill="var(--led-off, #3a3f4a)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <circle id="pin-A" cx="20" cy="6" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-C" cx="20" cy="56" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

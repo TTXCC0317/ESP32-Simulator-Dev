@@ -1,0 +1,28 @@
+{
+  "type": "wokwi-led",
+  "name": "LED",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "A", "role": "signal.in", "x": 20, "y": 6 },
+    { "name": "C", "role": "signal.out", "x": 20, "y": 56 }
+  ],
+  "attrs": [
+    {
+      "key": "color",
+      "type": "enum",
+      "label": "颜色",
+      "default": "red",
+      "options": [
+        { "value": "red", "label": "红" },
+        { "value": "green", "label": "绿" },
+        { "value": "blue", "label": "蓝" },
+        { "value": "yellow", "label": "黄" },
+        { "value": "white", "label": "白" }
+      ]
+    },
+    { "key": "label", "type": "text", "label": "标签", "default": "" }
+  ],
+  "renderer": { "asset": "parts/wokwi-led.svg", "width": 40, "height": 62 },
+  "simulator": { "listens": ["gpio.write", "pwm.duty"], "behavior": "light-emitter" }
+}

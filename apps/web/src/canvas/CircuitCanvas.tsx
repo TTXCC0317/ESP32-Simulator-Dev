@@ -7,6 +7,7 @@ import { useCircuitStore } from '../circuit/circuitStore';
 import { P1_CATALOG } from '../circuit/catalog-data';
 import { pinWorldPos, snapPoint, type Vec2 } from '../circuit/wiring';
 import { useDndStore } from '../circuit/dndStore';
+import { useUiStore } from '../stores/ui';
 import { GridLayer } from './GridLayer';
 import { WireLayer } from './WireLayer';
 import { PartLayer } from './PartLayer';
@@ -71,6 +72,32 @@ export default function CircuitCanvas() {
     ro.observe(el);
     setSize({ width: el.clientWidth, height: el.clientHeight });
     return () => ro.disconnect();
+  }, []);
+
+  // 缩略图截图钩子（04-§8 D3）：保存工程前生成 240×160 PNG dataURL（不展示 Overlay 高亮）
+  useEffect(() => {
+    const capture = (): string | null => {
+      const stage = stageRef.current;
+      if (!stage) return null;
+      const src = stage.toCanvas({ pixelRatio: 0.5 });
+      const out = document.createElement('canvas');
+      out.width = 240;
+      out.height = 160;
+      const ctx = out.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle =
+        getComputedStyle(document.documentElement).getPropertyValue('--bg') || '#0f1115';
+      ctx.fillRect(0, 0, 240, 160);
+      const scale = Math.max(240 / src.width, 160 / src.height);
+      const w = src.width * scale;
+      const h = src.height * scale;
+      ctx.drawImage(src, (240 - w) / 2, (160 - h) / 2, w, h);
+      return out.toDataURL('image/png');
+    };
+    useUiStore.getState().setStageCapture(capture);
+    return () => {
+      useUiStore.getState().setStageCapture(null);
+    };
   }, []);
 
   // 光标

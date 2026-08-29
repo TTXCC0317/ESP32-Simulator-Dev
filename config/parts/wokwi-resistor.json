@@ -1,0 +1,22 @@
+{
+  "type": "wokwi-resistor",
+  "name": "电阻",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "1", "role": "passive", "x": 4, "y": 14 },
+    { "name": "2", "role": "passive", "x": 72, "y": 14 }
+  ],
+  "attrs": [
+    {
+      "key": "value",
+      "type": "number",
+      "label": "阻值 (Ω)",
+      "default": 1000,
+      "min": 0,
+      "step": 100
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-resistor.svg", "width": 76, "height": 28 },
+  "simulator": { "listens": [], "behavior": "passive-through" }
+}

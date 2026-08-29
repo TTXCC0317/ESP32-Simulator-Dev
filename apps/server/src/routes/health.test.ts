@@ -1,12 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { appConfigSchema } from '../config/schema';
 import { openDatabase, type Db } from '../db/client';
+import { runMigrations } from '../db/migrator';
 import { buildApp, type BuildAppOptions } from '../app';
 import type { ToolsStatus } from '../services/tools-probe';
 
 /**
  * L3：health 路由 fastify.inject 集成测试（02-§3.1 分层）。
- * 探测实现注入 stub，不拉起真实子进程；数据库用内存库。
+ * 探测实现注入 stub，不拉起真实子进程；数据库用内存库（需先跑迁移——
+ * buildApp 启动期会导入 catalog 与示例种子，依赖业务表）。
  */
 
 const stubTools: ToolsStatus = {
@@ -30,6 +32,7 @@ afterEach(async () => {
 async function buildTestApp() {
   const config = appConfigSchema.parse({});
   const db = openDatabase({ path: ':memory:', wal: false });
+  runMigrations(db);
   const opts: BuildAppOptions = { config, db, probe: async () => stubTools };
   const app = await buildApp(opts);
   apps.push({ app, db });

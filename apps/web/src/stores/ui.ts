@@ -18,6 +18,8 @@ export interface UiState {
   inspectorCollapsed: boolean;
   bottomCollapsed: boolean;
   bottomHeight: number;
+  /** 画布截图钩子（04-§8 D3）：保存工程前由 CircuitCanvas 注册，生成 240×160 PNG dataURL */
+  stageCapture: (() => string | null) | null;
   setTheme: (t: Theme) => void;
   toggleTheme: () => void;
   setLocale: (l: 'zh-CN' | 'en-US') => void;
@@ -25,6 +27,7 @@ export interface UiState {
   toggleInspector: () => void;
   toggleBottom: () => void;
   setBottomHeight: (h: number) => void;
+  setStageCapture: (fn: (() => string | null) | null) => void;
 }
 
 /** 写根节点 data-theme（index.html 内联脚本同规则，保证刷新前一致） */
@@ -48,6 +51,7 @@ export const useUiStore = create<UiState>()(
       inspectorCollapsed: false,
       bottomCollapsed: false,
       bottomHeight: BOTTOM_DEFAULT,
+      stageCapture: null,
       setTheme: (t) => {
         applyTheme(t);
         set({ theme: t });
@@ -63,6 +67,7 @@ export const useUiStore = create<UiState>()(
       toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
       toggleBottom: () => set((s) => ({ bottomCollapsed: !s.bottomCollapsed })),
       setBottomHeight: (h) => set({ bottomHeight: clampBottomHeight(h) }),
+      setStageCapture: (fn) => set({ stageCapture: fn }),
     }),
     {
       name: 'esp32-sim.ui',

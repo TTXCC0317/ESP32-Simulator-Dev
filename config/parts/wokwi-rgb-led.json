@@ -1,0 +1,25 @@
+{
+  "type": "wokwi-rgb-led",
+  "name": "RGB LED",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "R", "role": "signal.in", "x": 8, "y": 30 },
+    { "name": "COM", "role": "signal.out", "x": 20, "y": 6 },
+    { "name": "G", "role": "signal.in", "x": 32, "y": 30 },
+    { "name": "B", "role": "signal.in", "x": 44, "y": 10 }
+  ],
+  "attrs": [
+    {
+      "key": "brightness",
+      "type": "number",
+      "label": "亮度",
+      "default": 255,
+      "min": 0,
+      "max": 255,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-rgb-led.svg", "width": 56, "height": 62 },
+  "simulator": { "listens": ["gpio.write", "pwm.duty"], "behavior": "light-emitter-rgb" }
+}

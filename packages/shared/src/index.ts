@@ -7,6 +7,7 @@
 
 export * from './circuit';
 export * from './catalog';
+export * from './project';
 export * from './engine';
 export * from './validation';
 export * from './ws-protocol';

@@ -1,0 +1,30 @@
+{
+  "type": "wokwi-pushbutton",
+  "name": "按键",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "1.l", "role": "passive", "x": 6, "y": 30 },
+    { "name": "1.r", "role": "passive", "x": 62, "y": 30 },
+    { "name": "2.l", "role": "passive", "x": 6, "y": 44 },
+    { "name": "2.r", "role": "passive", "x": 62, "y": 44 }
+  ],
+  "attrs": [
+    {
+      "key": "color",
+      "type": "enum",
+      "label": "颜色",
+      "default": "red",
+      "options": [
+        { "value": "red", "label": "红" },
+        { "value": "green", "label": "绿" },
+        { "value": "blue", "label": "蓝" },
+        { "value": "yellow", "label": "黄" },
+        { "value": "white", "label": "白" }
+      ]
+    },
+    { "key": "label", "type": "text", "label": "标签", "default": "" }
+  ],
+  "renderer": { "asset": "parts/wokwi-pushbutton.svg", "width": 68, "height": 68 },
+  "simulator": { "listens": [], "produces": ["pin.level"], "behavior": "momentary-switch" }
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 48" width="88" height="48">
+  <!-- wokwi-slide-switch（05-§1.7/§4.1）：封装 88×48；引脚 1/2/3（滑块位置由画布层叠加） -->
+  <rect x="4" y="18" width="80" height="24" rx="12" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <rect x="22" y="22" width="16" height="16" rx="4" fill="#9aa3b2"/>
+  <circle id="pin-1" cx="8" cy="40" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-2" cx="44" cy="40" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-3" cx="80" cy="40" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

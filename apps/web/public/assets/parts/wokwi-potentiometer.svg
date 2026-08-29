@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <!-- wokwi-potentiometer（05-§1.6/§4.1）：封装 96×96；引脚 GND/SIG/VCC -->
+  <rect x="8" y="12" width="80" height="70" rx="8" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <circle cx="48" cy="42" r="22" fill="var(--led-off, #3a3f4a)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <line x1="48" y1="42" x2="48" y2="24" stroke="#9aa3b2" stroke-width="3"/>
+  <circle id="pin-GND" cx="12" cy="90" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SIG" cx="48" cy="90" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-VCC" cx="84" cy="90" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

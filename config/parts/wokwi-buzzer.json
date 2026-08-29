@@ -1,0 +1,23 @@
+{
+  "type": "wokwi-buzzer",
+  "name": "有源蜂鸣器",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "GND", "role": "gnd", "x": 36, "y": 66 },
+    { "name": "VCC", "role": "power", "x": 36, "y": 6 }
+  ],
+  "attrs": [
+    {
+      "key": "volume",
+      "type": "number",
+      "label": "音量",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-buzzer.svg", "width": 72, "height": 72 },
+  "simulator": { "listens": ["gpio.write", "pwm.duty"], "behavior": "sound-emitter" }
+}

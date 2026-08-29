@@ -89,6 +89,11 @@ export const partInstanceSchema = z.object({
   hide: z.boolean().optional(),
 });
 
+/**
+ * 连线 schema：source/target 按 `partId:pin` 字符串校验；
+ * 输出类型断言为 Connection（PinRef 模板字面量）——zod v3 无法直接推断模板字面量，
+ * 业务侧由 parsePinRef/validateCircuitDoc 兜底（§2.5）。
+ */
 export const connectionSchema = z.object({
   id: z.string().min(1),
   /** PinRef = `${PartId}:${pin}` */
@@ -96,7 +101,7 @@ export const connectionSchema = z.object({
   target: z.string().min(1),
   color: wireColorSchema,
   path: z.array(wireSegmentSchema),
-});
+}) as unknown as z.ZodType<Connection, z.ZodTypeDef, unknown>;
 
 export const circuitDocSchema = z.object({
   formatVersion: z.literal(1),

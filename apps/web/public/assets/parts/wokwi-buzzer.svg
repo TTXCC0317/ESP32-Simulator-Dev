@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72">
+  <!-- wokwi-buzzer（05-§1.8/§4.1）：封装 72×72；引脚 VCC/GND -->
+  <circle cx="36" cy="36" r="29" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <circle cx="36" cy="36" r="6" fill="#111318" stroke="var(--panel-border, #262b36)"/>
+  <text x="36" y="58" text-anchor="middle" font-size="8" fill="#9aa3b2">BUZZER</text>
+  <circle id="pin-VCC" cx="36" cy="6" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GND" cx="36" cy="66" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

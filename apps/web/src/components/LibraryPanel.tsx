@@ -121,9 +121,15 @@ export default function LibraryPanel() {
                   title={`拖入画布：${d.name} (${d.type})`}
                   className="flex cursor-grab flex-col items-center gap-1 rounded border border-panel-border bg-bg px-1 py-2 transition-colors hover:border-accent hover:bg-accent/10 active:cursor-grabbing"
                 >
-                  <span
-                    className="h-6 w-6 rounded-sm border border-panel-border bg-panel"
-                    aria-hidden
+                  {/* 缩略图复用元件 SVG（05-§4：等比缩放到 96×72 内） */}
+                  <img
+                    src={`/assets/${d.renderer.asset}`}
+                    alt=""
+                    width={48}
+                    height={36}
+                    loading="lazy"
+                    draggable={false}
+                    className="max-h-9 max-w-12 object-contain"
                   />
                   <span className="text-[10px] leading-tight text-text-primary">{d.name}</span>
                 </button>

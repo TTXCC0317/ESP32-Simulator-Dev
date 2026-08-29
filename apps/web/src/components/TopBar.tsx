@@ -1,26 +1,58 @@
+import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { useCircuitStore } from '../circuit/circuitStore';
+import { useProjectStore } from '../stores/project';
 import { useUiStore } from '../stores/ui';
 
-/** TopBar 骨架（04-§3）：M1 仅 Logo/工程名/主题切换可用，运行组与引擎选择随 M4 接入 */
-export default function TopBar({ projectName }: { projectName: string }) {
+/**
+ * TopBar（04-§3）：Logo/工程名（行内编辑）/引擎组/保存状态/主题切换。
+ * 运行组与引擎选择随 M4 接入；保存流程（PUT + 缩略图）M3 已接。
+ */
+export default function TopBar() {
   const theme = useUiStore((s) => s.theme);
   const toggleTheme = useUiStore((s) => s.toggleTheme);
+  const dirty = useCircuitStore((s) => s.dirty);
+  const current = useProjectStore((s) => s.current);
+  const saving = useProjectStore((s) => s.saving);
+  const savedAt = useProjectStore((s) => s.savedAt);
+  const renameCurrent = useProjectStore((s) => s.renameCurrent);
+  const saveCurrent = useProjectStore((s) => s.saveCurrent);
+  const leaveCurrent = useProjectStore((s) => s.leaveCurrent);
+
+  const savedLabel = dirty
+    ? '有未保存修改'
+    : savedAt
+      ? `已保存 ${new Date(savedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+      : '已保存';
+
+  const onLogoClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (dirty && !window.confirm('有未保存修改，离开将丢失，确定返回工程列表？')) {
+      e.preventDefault();
+      return;
+    }
+    leaveCurrent();
+  };
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-panel-border bg-panel px-3">
-      {/* Logo：点击回工程列表（脏数据确认随 M3） */}
+      {/* Logo：点击回工程列表（脏数据确认） */}
       <Link
         to="/"
+        onClick={onLogoClick}
         title="返回工程列表"
         className="grid h-8 w-8 place-items-center rounded bg-accent text-sm font-bold text-white"
       >
         E
       </Link>
 
-      {/* 工程名：行内编辑随 M3（PUT projects） */}
-      <span className="max-w-40 truncate text-sm font-medium" title={projectName}>
-        {projectName || '未命名工程'}
-      </span>
+      {/* 工程名：行内编辑（PUT projects.name，随保存提交） */}
+      <input
+        value={current?.name ?? ''}
+        onChange={(e) => renameCurrent(e.target.value)}
+        placeholder="未命名工程"
+        aria-label="工程名"
+        className="w-40 rounded border border-transparent bg-transparent px-1 py-0.5 text-sm font-medium hover:border-panel-border focus:border-accent focus:outline-none"
+      />
 
       <div className="mx-1 h-6 w-px bg-panel-border" />
 
@@ -79,8 +111,19 @@ export default function TopBar({ projectName }: { projectName: string }) {
       </select>
 
       <div className="ml-auto flex items-center gap-3">
-        {/* 保存状态（M3 接保存流程） */}
-        <span className="text-xs text-text-secondary">已保存 --:--</span>
+        {/* 保存：Ctrl+S / 按钮（PUT diagram + files 缩略图） */}
+        <button
+          type="button"
+          onClick={() => void saveCurrent()}
+          disabled={!current || !dirty || saving}
+          title="保存工程（Ctrl+S）"
+          className="rounded bg-accent px-2.5 py-1 text-xs text-white disabled:opacity-40"
+        >
+          {saving ? '保存中…' : '保存'}
+        </button>
+        <span className={`text-xs ${dirty ? 'text-warn' : 'text-text-secondary'}`}>
+          {savedLabel}
+        </span>
 
         {/* 主题切换：即时切换并持久化（04-§3） */}
         <button

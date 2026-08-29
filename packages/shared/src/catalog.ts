@@ -85,7 +85,21 @@ export interface BoardDefinition {
     gpio: number;
     x: number;
     y: number;
-    caps: Array<'gpio' | 'pwm' | 'adc' | 'i2c.sda' | 'i2c.scl' | 'uart' | 'spi' | 'power' | 'gnd'>;
+    caps: Array<
+      | 'gpio'
+      | 'pwm'
+      | 'adc'
+      | 'i2c.sda'
+      | 'i2c.scl'
+      | 'uart.tx'
+      | 'uart.rx'
+      | 'uart'
+      | 'spi'
+      | 'power'
+      | 'gnd'
+    >;
+    /** 引脚所在列（05-§1.1.1：左右列同名引脚 PinRef 不带列后缀；board_pinmaps 主键 (board_type,pin_name,col)） */
+    col: 'L' | 'R';
   }>;
 }
 
@@ -167,8 +181,21 @@ export const boardDefinitionSchema = z.object({
       x: z.number().finite(),
       y: z.number().finite(),
       caps: z.array(
-        z.enum(['gpio', 'pwm', 'adc', 'i2c.sda', 'i2c.scl', 'uart', 'spi', 'power', 'gnd']),
+        z.enum([
+          'gpio',
+          'pwm',
+          'adc',
+          'i2c.sda',
+          'i2c.scl',
+          'uart.tx',
+          'uart.rx',
+          'uart',
+          'spi',
+          'power',
+          'gnd',
+        ]),
       ),
+      col: z.enum(['L', 'R']),
     }),
   ),
 });

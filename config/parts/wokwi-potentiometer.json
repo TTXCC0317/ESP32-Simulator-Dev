@@ -1,0 +1,24 @@
+{
+  "type": "wokwi-potentiometer",
+  "name": "电位器",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "GND", "role": "gnd", "x": 12, "y": 90 },
+    { "name": "SIG", "role": "analog", "x": 48, "y": 90 },
+    { "name": "VCC", "role": "power", "x": 84, "y": 90 }
+  ],
+  "attrs": [
+    {
+      "key": "value",
+      "type": "number",
+      "label": "位置 (%)",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-potentiometer.svg", "width": 96, "height": 96 },
+  "simulator": { "listens": [], "produces": ["analog.value"], "behavior": "analog-source" }
+}
