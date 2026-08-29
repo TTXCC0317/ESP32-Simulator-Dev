@@ -1,0 +1,27 @@
+# 中转拉取 emscripten/emsdk:3.1.45（国内 Docker Hub 直连/镜像源均不可用，ghcr.io 可达）
+# 手动 dispatch 运行一次；产物 ghcr.io/<owner>/emsdk:3.1.45 供本地 docker pull。
+# 注：私有仓库产出的 GHCR 包默认 private，本地匿名拉取前需在
+#     GitHub → Packages → emsdk → Package settings 中改为 Public（一次性）。
+name: relay-emsdk
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull emsdk & push to GHCR
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE="ghcr.io/${OWNER,,}/emsdk:3.1.45"
+          echo "target: $IMAGE"
+          docker pull emscripten/emsdk:3.1.45
+          docker tag emscripten/emsdk:3.1.45 "$IMAGE"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE"
