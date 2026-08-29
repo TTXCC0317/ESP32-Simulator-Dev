@@ -22,10 +22,9 @@ config/app.json
 config/boards/*.local.json
 config/parts/*.local.json
 
-# WASM 产物（按 02 §5.3.1 经 Docker 构建后入库，开发期不入版本管理）
+# WASM 产物（AGENTS 硬约束/02-§5.3.1：经 Docker 构建后入库 apps/web/src/sim/mpy/，供 CI golden 引擎A 使用）
 *.wasm
-apps/web/src/sim/mpy/*.wasm
-apps/web/src/sim/mpy/*.wasm.mjs
+!apps/web/src/sim/mpy/micropython.wasm
 
 # 环境变量
 .env
@@ -47,6 +46,9 @@ desktop.ini
 coverage/
 .playwright-report/
 test-results/
+
+# SSH 密钥（git push 专用，不入版本管理）
+.ssh/
 
 # 临时日志（上一会话 skill 安装日志等）
 skills-install.log

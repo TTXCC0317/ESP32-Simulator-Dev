@@ -33,4 +33,27 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # ---- 引擎B 工具链实装（02-§3.2 L5：blink 双引擎 golden 需真实 arduino-cli/QEMU）----
+      - name: Install arduino-cli + esp32 core
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+      - name: Install esptool
+        run: python3 -m pip install --user "esptool==4.12.0"
+      - name: Install QEMU (Espressif fork esp-develop 9.2.2)
+        run: |
+          QEMU_TAG=esp-develop-9.2.2-20260417
+          QEMU_VER=esp_develop_9.2.2_20260417
+          mkdir -p /opt/qemu-esp/bin
+          for t in xtensa riscv32; do
+            curl -sL "https://github.com/espressif/qemu/releases/download/${QEMU_TAG}/qemu-${t}-softmmu-${QEMU_VER}-x86_64-linux-gnu.tar.xz" -o /tmp/qemu-${t}.tar.xz
+            mkdir -p /tmp/qemu-${t} && tar -xJf /tmp/qemu-${t}.tar.xz -C /tmp/qemu-${t}
+            find /tmp/qemu-${t} -name "qemu-system-${t}" -type f -exec cp {} /opt/qemu-esp/bin/ \;
+          done
+          test -x /opt/qemu-esp/bin/qemu-system-xtensa
+          test -x /opt/qemu-esp/bin/qemu-system-riscv32
+      - name: Generate config/app.json (CI 工具链路径)
+        run: |
+          jq '.tools.qemuXtensa = "/opt/qemu-esp/bin/qemu-system-xtensa" | .tools.qemuRiscv32 = "/opt/qemu-esp/bin/qemu-system-riscv32"' config/app.example.json > config/app.json
       - run: pnpm golden

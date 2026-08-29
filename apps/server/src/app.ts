@@ -11,6 +11,10 @@ import type { Db } from './db/client';
 import { healthRoutes, type HealthRoutesOptions } from './routes/health';
 import { catalogRoutes } from './routes/catalog';
 import { projectRoutes } from './routes/projects';
+import { buildRoutes } from './routes/builds';
+import { wsGatewayRoutes } from './routes/ws-gateway';
+import { BuildService, type BuildRunner } from './services/build.service';
+import { QemuManager, type SpawnQemuFn } from './services/qemu.manager';
 import { loadCatalog, importCatalog, type CatalogData } from './services/catalog.service';
 import { seedExamples } from './db/seed';
 import { probeTools, type ToolsStatus } from './services/tools-probe';
@@ -35,6 +39,10 @@ export interface BuildAppOptions {
   probe?: (cfg: AppConfig['tools']) => Promise<ToolsStatus>;
   /** 覆盖元件目录（测试注入；缺省从 <repoRoot>/config 读取并导入 DB + 种子示例） */
   catalog?: CatalogData;
+  /** 覆盖编译执行器（测试注入 stub；缺省 execa 调 arduino-cli/esptool） */
+  buildRunner?: BuildRunner;
+  /** 覆盖 QEMU 进程 spawn（测试注入 stub；缺省 node child_process.spawn） */
+  qemuSpawn?: SpawnQemuFn;
 }
 
 export function makeTraceId(): string {
@@ -106,9 +114,25 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   await fastify.register(catalogRoutes, { db, catalog });
   await fastify.register(projectRoutes, { db, config, catalog });
 
+  // 5.5) 引擎B 服务（M4）：编译队列 + QEMU 会话管理器（REST build 路由同步注册）
+  const buildService = new BuildService({ db, config, run: opts.buildRunner });
+  const qemuManager = new QemuManager({ config, spawn: opts.qemuSpawn });
+  await fastify.register(buildRoutes, { db, config, builds: buildService });
+
   // 6) websocket 插件（M4 会话网关使用；M1 先完成链条注册与 payload 上限。
   //    @fastify/websocket v10 起 ws server 选项收敛到 options 子对象）
   await fastify.register(websocket, { options: { maxPayload: config.ws.maxMsgBytes } });
+
+  // 6.5) WS 会话网关（03-§7.3 状态机；必须在 websocket 插件之后注册）
+  await fastify.register(wsGatewayRoutes, {
+    db,
+    config,
+    builds: buildService,
+    qemu: qemuManager,
+  });
+
+  // 暴露给入口层：graceful shutdown 时回收 QEMU 进程（06-§4 无孤儿进程）
+  fastify.decorate('qemuManager', qemuManager);
 
   // 7) static：仅在 web 产物存在时挂载（dev 期由 Vite 5173 服务前端）
   const distDir = resolve(process.cwd(), config.server.staticDistPath);
@@ -122,5 +146,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 declare module 'fastify' {
   interface FastifyRequest {
     traceId: string;
+  }
+  interface FastifyInstance {
+    qemuManager: QemuManager;
   }
 }

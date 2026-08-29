@@ -1,0 +1,471 @@
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { WebSocket } from 'ws';
+import type net from 'node:net';
+import { join } from 'node:path';
+import type { CircuitDoc } from '@esp32-sim/shared';
+import { clientMsgSchema, type ClientMsg, type ServerMsg } from '@esp32-sim/shared';
+import type { AppConfig } from '../config/schema';
+import type { Db } from '../db/client';
+import type { BuildService } from '../services/build.service';
+import type { QemuManager } from '../services/qemu.manager';
+import { notFound } from '../utils/http-error';
+
+/**
+ * WS 会话网关（03-§7.3 状态机 + §7.4 编译进度通道）
+ *
+ * 状态机：attaching → building-wait → running ⇄ paused(M4 不支持) → error → closed
+ * - attach：build success 直接 spawn QEMU；queued/running 订阅进度；无记录触发新编译；
+ * - build.progress：普通行 100ms 窗口聚合 logLines；critical 行（error/warning）立即 logLine；
+ * - 心跳（06-§7.1.1 N20）：ws ping frame + 应用层 ping 消息；45s 未 pong → terminate；
+ * - 断线保留 reconnectGraceMs（60s）供同 sid 重连，超时回收 QEMU；
+ * - 速率：config.ws.msgRateLimitPerSec（超限 error.ack + 断开）。
+ */
+
+interface GwSession {
+  sid: string;
+  state: 'attaching' | 'building-wait' | 'running' | 'paused' | 'error' | 'closed';
+  socket: WebSocket | null;
+  projectId: string | null;
+  circuit: CircuitDoc | null;
+  firmwareId: string | null;
+  boardType: string | null;
+  qemuSessionId: string | null;
+  serialSocket: net.Socket | null;
+  unsubBuild: (() => void) | null;
+  graceTimer: NodeJS.Timeout | null;
+  lifeTimer: NodeJS.Timeout;
+  createdAt: number;
+  alive: boolean;
+  /** 速率窗口 */
+  rateCount: number;
+  rateWindowStart: number;
+}
+
+const CRITICAL_LINE = /\b(error|warning|fatal|失败)\b/i;
+
+export interface WsGatewayOptions {
+  config: AppConfig;
+  db: Db;
+  builds: BuildService;
+  qemu: QemuManager;
+}
+
+export async function wsGatewayRoutes(
+  fastify: FastifyInstance,
+  opts: WsGatewayOptions,
+): Promise<void> {
+  const { config, builds, qemu } = opts;
+  const sessions = new Map<string, GwSession>();
+
+  // ---- QEMU 非正常退出 → 会话 error（网关 unaware 的进程崩溃兜底） ----
+  qemu.onExit((qemuSid, code, signal) => {
+    const s = [...sessions.values()].find((x) => x.qemuSessionId === qemuSid);
+    if (!s || s.state === 'closed') return;
+    detachSerial(s);
+    s.qemuSessionId = null;
+    const msg = `QEMU 进程退出（code=${code ?? 'null'}${signal ? `, signal=${signal}` : ''}）`;
+    setState(s, 'error', msg);
+    sendErr(s, 'QEMU_EXIT', msg);
+  });
+
+  // ---- 心跳：ping frame + 失联判定（06-§7.1.1） ----
+  const hb = setInterval(() => {
+    for (const s of sessions.values()) {
+      if (!s.socket) continue;
+      if (!s.alive) {
+        s.socket.terminate();
+        continue;
+      }
+      s.alive = false;
+      s.socket.ping();
+    }
+  }, config.ws.heartbeatIntervalMs);
+  hb.unref();
+
+  // ---- WS /ws/sim/:sid ----
+  fastify.get('/ws/sim/:sid', { websocket: true }, (socket: WebSocket, req: FastifyRequest) => {
+    const { sid } = req.params as { sid: string };
+
+    // 重连：同 sid 接管（running 会话的 QEMU 仍在运行）
+    const existing = sessions.get(sid);
+    if (existing && existing.state !== 'closed') {
+      if (existing.socket) {
+        socket.close(4000, 'session already attached');
+        return;
+      }
+      clearTimeout(existing.graceTimer ?? undefined);
+      existing.graceTimer = null;
+      existing.socket = socket;
+      existing.alive = true;
+      bindSocket(existing, socket);
+      send(existing, { type: 'state', payload: { status: existing.state } });
+      return;
+    }
+
+    const s: GwSession = {
+      sid,
+      state: 'attaching',
+      socket,
+      projectId: null,
+      circuit: null,
+      firmwareId: null,
+      boardType: null,
+      qemuSessionId: null,
+      serialSocket: null,
+      unsubBuild: null,
+      graceTimer: null,
+      lifeTimer: setTimeout(() => {
+        void destroySession(s, 'session lifetime exceeded');
+      }, config.ws.sessionMaxLifetimeMs),
+      createdAt: Date.now(),
+      alive: true,
+      rateCount: 0,
+      rateWindowStart: Date.now(),
+    };
+    s.lifeTimer.unref();
+    bindSocket(s, socket);
+    sessions.set(sid, s);
+  });
+
+  // ---- REST：会话状态查询 / 指标（01-§5.2） ----
+  fastify.get('/api/sessions/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const s = sessions.get(id);
+    if (!s) throw notFound(`会话不存在或已回收：${id}`);
+    return await reply.send({
+      id: s.sid,
+      state: s.state,
+      projectId: s.projectId,
+      firmwareId: s.firmwareId,
+      qemuSessionId: s.qemuSessionId,
+      createdAt: s.createdAt,
+    });
+  });
+
+  fastify.get('/api/metrics/sessions', async (_req, reply) => {
+    const byState: Record<string, number> = {};
+    for (const s of sessions.values()) byState[s.state] = (byState[s.state] ?? 0) + 1;
+    return await reply.send({ total: sessions.size, byState });
+  });
+
+  // ---- 内部：消息处理 ----
+
+  function bindSocket(s: GwSession, socket: WebSocket): void {
+    socket.on('message', (raw: Buffer) => {
+      if (!checkRate(s)) return;
+      let json: unknown;
+      try {
+        json = JSON.parse(raw.toString('utf8'));
+      } catch {
+        sendErr(s, 'BAD_JSON', '消息不是合法 JSON');
+        return;
+      }
+      const parsed = clientMsgSchema.safeParse(json);
+      if (!parsed.success) {
+        sendErr(s, 'VALIDATION_FAILED', `消息校验失败：${parsed.error.issues[0]?.message ?? ''}`);
+        return;
+      }
+      void handleMessage(s, parsed.data as ClientMsg);
+    });
+    socket.on('pong', () => {
+      s.alive = true;
+    });
+    socket.on('close', () => {
+      s.socket = null;
+      // 断线保留 grace（06-§4：60s 重连窗口），超时回收
+      s.graceTimer = setTimeout(() => {
+        void destroySession(s, 'reconnect grace expired');
+      }, config.flash.reconnectGraceMs);
+      s.graceTimer.unref();
+    });
+    socket.on('error', () => {
+      socket.terminate();
+    });
+  }
+
+  function checkRate(s: GwSession): boolean {
+    const now = Date.now();
+    if (now - s.rateWindowStart > 1000) {
+      s.rateWindowStart = now;
+      s.rateCount = 0;
+    }
+    s.rateCount += 1;
+    if (s.rateCount > config.ws.msgRateLimitPerSec) {
+      sendErr(s, 'RATE_LIMITED', `消息速率超限（>${config.ws.msgRateLimitPerSec}/s）`);
+      s.socket?.close(1008, 'rate limited');
+      return false;
+    }
+    return true;
+  }
+
+  async function handleMessage(s: GwSession, msg: ClientMsg): Promise<void> {
+    switch (msg.type) {
+      case 'attach':
+        return void onAttach(s, msg.payload);
+      case 'ctrl':
+        return void onCtrl(s, msg.payload);
+      case 'input.uart':
+        return onInputUart(s, msg.payload.bytes);
+      default:
+        // input.pin / input.analog：GPIO 桥随 M5
+        sendErr(s, 'UNSUPPORTED', `${msg.type} 引擎B 随 M5 GPIO 桥接入`);
+    }
+  }
+
+  function onAttach(
+    s: GwSession,
+    p: { projectId: string; circuit: CircuitDoc; firmwareId: string; boardType: string },
+  ): void {
+    if (s.state !== 'attaching' && s.state !== 'error') {
+      sendErr(s, 'INVALID_STATE', `attach 仅在 attaching/error 状态有效（当前 ${s.state}）`);
+      return;
+    }
+    s.projectId = p.projectId;
+    s.circuit = p.circuit;
+    s.firmwareId = p.firmwareId;
+    s.boardType = p.boardType;
+    setState(s, 'attaching');
+    resolveBuild(s);
+  }
+
+  /** build 状态分流（§7.3：success→spawn；queued/running→building-wait；无→submit；failed→error） */
+  function resolveBuild(s: GwSession): void {
+    const firmwareId = s.firmwareId;
+    if (!firmwareId || !s.boardType) return;
+    const rec = builds.status(firmwareId);
+
+    if (!rec) {
+      // 无记录：触发新编译（需 projectId）
+      if (!s.projectId) {
+        setState(s, 'error', 'attach 缺少 projectId，无法发起编译');
+        return;
+      }
+      try {
+        const { buildId } = builds.submit(s.projectId, 'arduino');
+        s.firmwareId = buildId;
+      } catch (err) {
+        setState(s, 'error', err instanceof Error ? err.message : String(err));
+        return;
+      }
+      enterBuildingWait(s);
+      return;
+    }
+
+    if (rec.status === 'success') {
+      void spawnQemuFor(s);
+      return;
+    }
+    if (rec.status === 'failed') {
+      const tail = (rec.log ?? '').split('\n').slice(-3).join('\n');
+      setState(s, 'error', `编译失败：${tail}`);
+      return;
+    }
+    enterBuildingWait(s);
+  }
+
+  function enterBuildingWait(s: GwSession): void {
+    const buildId = s.firmwareId;
+    if (!buildId) return;
+    setState(s, 'building-wait');
+    s.unsubBuild?.();
+    let pendingLines: string[] = [];
+    let flushTimer: NodeJS.Timeout | null = null;
+
+    const flush = (): void => {
+      flushTimer = null;
+      if (!pendingLines.length) return;
+      send(s, {
+        type: 'build.progress',
+        payload: { buildId, phase: 'compiling', progress: lastProgress, logLines: pendingLines },
+      });
+      pendingLines = [];
+    };
+    let lastProgress = 0;
+
+    s.unsubBuild = builds.onEvent((evBuildId, ev) => {
+      if (evBuildId !== buildId) return;
+      if (s.state !== 'building-wait') return;
+
+      if (ev.kind === 'log' && ev.line !== undefined) {
+        lastProgress = ev.progress ?? lastProgress;
+        if (CRITICAL_LINE.test(ev.line)) {
+          // critical 行立即推送，不进聚合窗口（§7.4）
+          send(s, {
+            type: 'build.progress',
+            payload: { buildId, phase: 'compiling', progress: lastProgress, logLine: ev.line },
+          });
+          return;
+        }
+        pendingLines.push(ev.line);
+        if (!flushTimer) {
+          flushTimer = setTimeout(flush, 100);
+          flushTimer.unref();
+        }
+        return;
+      }
+
+      if (ev.kind === 'phase' && ev.phase) {
+        clearTimeout(flushTimer ?? undefined);
+        flushTimer = null;
+        pendingLines = [];
+        send(s, {
+          type: 'build.progress',
+          payload: {
+            buildId,
+            phase: ev.phase,
+            progress: ev.progress ?? 1,
+            error: ev.error,
+          },
+        });
+        if (ev.phase === 'success') void spawnQemuFor(s);
+        if (ev.phase === 'failed') {
+          setState(s, 'error', `编译失败：${ev.error ?? 'unknown'}`);
+        }
+      }
+    });
+
+    // 已入队但订阅晚于早期事件：补一条当前状态
+    const rec = builds.status(buildId);
+    if (rec) {
+      send(s, {
+        type: 'build.progress',
+        payload: {
+          buildId,
+          phase: rec.status === 'queued' ? 'queued' : 'compiling',
+          progress: 0,
+        },
+      });
+    }
+  }
+
+  async function spawnQemuFor(s: GwSession): Promise<void> {
+    const firmwareId = s.firmwareId;
+    if (!firmwareId || !s.boardType) return;
+    const rec = builds.status(firmwareId);
+    if (!rec || !rec.artifact) {
+      setState(s, 'error', 'build 无产物（flash.img 缺失）');
+      return;
+    }
+    // 旧实例清理（ctrl reset respawn 路径）
+    if (s.qemuSessionId) {
+      detachSerial(s);
+      await qemu.dispose(s.qemuSessionId, 'respawn');
+      s.qemuSessionId = null;
+    }
+    try {
+      const { sessionId } = await qemu.spawnSession({
+        firmwarePath: join(builds.buildDir(firmwareId), rec.artifact),
+        boardType: s.boardType,
+      });
+      s.qemuSessionId = sessionId;
+      const serial = await qemu.connectSerial(sessionId);
+      s.serialSocket = serial;
+      serial.on('data', (chunk: Buffer) => {
+        send(s, { type: 'uart.rx', payload: { bytes: [...chunk] } });
+      });
+      serial.on('close', () => {
+        if (s.serialSocket === serial) s.serialSocket = null;
+      });
+      serial.on('error', (err) => {
+        send(s, {
+          type: 'log',
+          payload: { level: 'warn', text: `串口连接异常：${err.message}` },
+        });
+      });
+      setState(s, 'running');
+    } catch (err) {
+      setState(s, 'error', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function onCtrl(s: GwSession, cmd: 'start' | 'pause' | 'reset' | 'stop'): void {
+    const qemuSid = s.qemuSessionId;
+    switch (cmd) {
+      case 'start':
+        if (s.state !== 'running' && s.state !== 'paused') {
+          sendErr(s, 'INVALID_STATE', `start 仅在 running/paused 有效（当前 ${s.state}）`);
+          return;
+        }
+        if (qemuSid) qemu.touch(qemuSid);
+        setState(s, 'running');
+        return;
+      case 'pause':
+        // M4：Windows 无 SIGSTOP 语义，QEMU 不可暂停（文档 03-§7.3 已注明）
+        sendErr(s, 'UNSUPPORTED', '引擎B 暂停在 M4（Windows）不支持');
+        return;
+      case 'reset': {
+        if (s.state !== 'running' && s.state !== 'paused' && s.state !== 'error') {
+          sendErr(s, 'INVALID_STATE', `reset 仅在运行/错误状态有效（当前 ${s.state}）`);
+          return;
+        }
+        setState(s, 'attaching');
+        void spawnQemuFor(s).then(() => {
+          if (s.state === 'attaching') setState(s, 'running');
+        });
+        return;
+      }
+      case 'stop':
+        void destroySession(s, 'ctrl stop');
+        return;
+    }
+  }
+
+  function onInputUart(s: GwSession, bytes: number[]): void {
+    if (s.state !== 'running' && s.state !== 'paused') {
+      sendErr(s, 'INVALID_STATE', '引擎未运行，串口输入被丢弃');
+      return;
+    }
+    const serial = s.serialSocket;
+    if (!serial) {
+      sendErr(s, 'NO_SERIAL', '串口未连接');
+      return;
+    }
+    if (s.qemuSessionId) qemu.touch(s.qemuSessionId);
+    serial.write(Buffer.from(bytes));
+  }
+
+  // ---- 内部：状态与会话生命周期 ----
+
+  function setState(s: GwSession, state: GwSession['state'], error?: string): void {
+    s.state = state;
+    send(s, { type: 'state', payload: error ? { status: state, error } : { status: state } });
+    if (error) {
+      send(s, { type: 'log', payload: { level: 'error', text: error } });
+    }
+  }
+
+  function detachSerial(s: GwSession): void {
+    s.serialSocket?.destroy();
+    s.serialSocket = null;
+  }
+
+  async function destroySession(s: GwSession, reason: string): Promise<void> {
+    if (s.state === 'closed') return;
+    clearTimeout(s.graceTimer ?? undefined);
+    clearTimeout(s.lifeTimer);
+    s.unsubBuild?.();
+    s.unsubBuild = null;
+    detachSerial(s);
+    if (s.qemuSessionId) {
+      await qemu.dispose(s.qemuSessionId, reason);
+      s.qemuSessionId = null;
+    }
+    setState(s, 'closed');
+    s.state = 'closed';
+    s.socket?.close(1000, 'session closed');
+    s.socket = null;
+    sessions.delete(s.sid);
+    fastify.log.info({ sid: s.sid, reason }, 'ws session destroyed');
+  }
+
+  function send(s: GwSession, msg: ServerMsg): void {
+    // ws readyState === WebSocket.OPEN（值引用会触发 consistent-type-imports 误报，取常量）
+    if (s.socket?.readyState === 1) {
+      s.socket.send(JSON.stringify(msg));
+    }
+  }
+
+  function sendErr(s: GwSession, code: string, message: string): void {
+    send(s, { type: 'error.ack', payload: { code, message } });
+  }
+}

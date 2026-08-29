@@ -1,0 +1,8 @@
+{
+  "exampleId": "blink",
+  "durationMs": 8000,
+  "expect": {
+    "serialCycle": ["LED ON", "LED OFF"],
+    "gpio": { "pin": 4, "highs": 2, "lows": 2 }
+  }
+}

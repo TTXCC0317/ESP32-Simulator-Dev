@@ -80,4 +80,17 @@ export const api = {
   listParts: () => request<PartDefinition[]>('/api/parts'),
   listBoards: () => request<BoardDefinition[]>('/api/boards'),
   listExamples: () => request<ExampleSummary[]>('/api/examples'),
+  // builds / engineB（M4）
+  submitBuild: (input: { projectId: string; toolchain: 'arduino' | 'esp-idf' }) =>
+    request<{ buildId: string }>('/api/build', json('POST', input)),
+  getTools: () => request<ToolsStatus>('/api/health/tools'),
 };
+
+/** 工具链探测（server /api/health/tools 返回的轻量形状） */
+export interface ToolsStatus {
+  node: string;
+  git: { ok: boolean; version?: string };
+  arduinoCli: { ok: boolean; reason?: string; version?: string };
+  esptool: { ok: boolean; reason?: string; version?: string };
+  qemu: { ok: boolean; reason?: string; version?: string };
+}

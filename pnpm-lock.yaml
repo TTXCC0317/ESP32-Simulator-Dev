@@ -90,6 +90,9 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
       tsup:
         specifier: ^8.3.0
         version: 8.5.1(@swc/core@1.16.1)(jiti@1.21.7)(postcss@8.5.26)(tsx@4.23.12)(typescript@5.6.2)
@@ -102,6 +105,9 @@ importers:
       vitest:
         specifier: ^2.1.0
         version: 2.1.0(@types/node@20.19.43)(jsdom@30.0.1)
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
 
   apps/web:
     dependencies:
@@ -1294,6 +1300,9 @@ packages:
 
   '@types/react@18.3.31':
     resolution: {integrity: sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@types/yargs-parser@21.0.3':
     resolution: {integrity: sha512-I4q9QU9MQv4oEOz4tAHJtNz1cwuLxn2F3xcc2iV5WdqLPpUnj30aUuxt1mAxYTG+oe8CZMV/+6rU4S4gRDzqtQ==}
@@ -4455,6 +4464,10 @@ snapshots:
     dependencies:
       '@types/prop-types': 15.7.15
       csstype: 3.2.3
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 20.19.43
 
   '@types/yargs-parser@21.0.3': {}
 

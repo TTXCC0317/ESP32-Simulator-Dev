@@ -19,7 +19,7 @@
     "build": "pnpm -r run build",
     "setup": "pwsh ./tools/setup-toolchain.ps1",
     "e2e": "playwright test",
-    "golden": "node tools/golden-runner.js",
+    "golden": "pnpm --filter @esp32-sim/server exec tsx src/golden/cli.ts",
     "prepare": "simple-git-hooks"
   },
   "devDependencies": {

@@ -11,6 +11,10 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  // EngineWorker 用 ES module 形式（03-§3.4 C1：new Worker(url, {type:'module'})）
+  worker: {
+    format: 'es',
+  },
   server: {
     port: 5173,
     proxy: {
@@ -26,6 +30,8 @@ export default defineConfig({
   },
   build: {
     // M3 接 Monaco 后按 04-§7.1 C3 加 manualChunks 单独切 chunk
+    // esnext：worker ES format 与动态 import wasm glue 需要
+    target: 'esnext',
     sourcemap: true,
   },
   test: {

@@ -16,6 +16,22 @@ async function main(): Promise<void> {
   const { applied, total } = runMigrations(db);
 
   const app = await buildApp({ config, db });
+
+  // graceful shutdown（06-§4：进程表无孤儿）：信号 → 关 HTTP → 回收 QEMU → 退出
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info({ signal }, 'shutting down');
+    void app
+      .close()
+      .then(() => app.qemuManager.disposeAll())
+      .then(() => process.exit(0))
+      .catch(() => process.exit(1));
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+
   await app.listen({ port: config.server.port, host: config.server.host });
   app.log.info(
     {

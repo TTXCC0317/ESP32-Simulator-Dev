@@ -1,13 +1,14 @@
 import { useRef, useState } from 'react';
 import { useUiStore } from '../stores/ui';
 import DiagramTab from './DiagramTab';
+import SerialMonitorTab from './SerialMonitorTab';
 
 const TABS = ['代码', 'diagram.json', '串口监视器', '逻辑分析仪'] as const;
 type Tab = (typeof TABS)[number];
 
 /**
  * BottomPanel（04-§2/§7）：Tab 条 + 默认 260px，可拖 180–480px，可折叠。
- * M2 接入 diagram.json Tab；代码随 M3（Monaco）、串口随 M4、逻辑分析仪随 M11。
+ * M2 接入 diagram.json Tab；代码随 M3（Monaco）、串口 M4 已接、逻辑分析仪随 M11。
  */
 export default function BottomPanel() {
   const collapsed = useUiStore((s) => s.bottomCollapsed);
@@ -84,10 +85,11 @@ export default function BottomPanel() {
 
       {active === 'diagram.json' ? (
         <DiagramTab />
+      ) : active === '串口监视器' ? (
+        <SerialMonitorTab />
       ) : (
         <div className="flex flex-1 items-center justify-center text-xs text-text-secondary">
           {active === '代码' && '代码编辑器随 M3 接入（Monaco，04-§7.1）'}
-          {active === '串口监视器' && '串口监视器随 M4 接入（04-§7.2）'}
           {active === '逻辑分析仪' && '逻辑分析仪随 M11 接入（04-§7.3）'}
         </div>
       )}

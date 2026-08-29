@@ -132,6 +132,27 @@ export const errorAckSchema = z.object({
   payload: z.object({ code: z.string().min(1), message: z.string() }),
 });
 
+/**
+ * 编译进度推送（§7.4 N19，复用引擎B WS 会话通道）：
+ * 普通行 100ms 窗口聚合为 logLines 批量；critical 行（error/warning）以 logLine 立即推送不聚合。
+ * 引擎A 不出现此消息（无后端编译）。
+ */
+export const buildProgressSchema = z.object({
+  type: z.literal('build.progress'),
+  payload: z.object({
+    buildId: z.string().min(1),
+    phase: z.enum(['queued', 'compiling', 'linking', 'merging', 'success', 'failed']),
+    /** 0..1，按 arduino-cli 输出行数估算 */
+    progress: z.number().min(0).max(1),
+    /** critical 单行（error/warning），立即推送 */
+    logLine: z.string().optional(),
+    /** 100ms 窗口聚合的普通行批量 */
+    logLines: z.array(z.string()).optional(),
+    /** failed 时的错误摘要 */
+    error: z.string().optional(),
+  }),
+});
+
 export const serverMsgSchema = z.discriminatedUnion('type', [
   serverStateSchema,
   gpioWriteSchema,
@@ -142,6 +163,7 @@ export const serverMsgSchema = z.discriminatedUnion('type', [
   fbUpdateSchema,
   serverLogSchema,
   errorAckSchema,
+  buildProgressSchema,
 ]);
 
 export type ServerMsg = z.infer<typeof serverMsgSchema>;

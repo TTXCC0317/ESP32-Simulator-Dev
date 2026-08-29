@@ -109,9 +109,13 @@ describe('serverMsgSchema（03-§2.4）', () => {
     { type: 'fb.update', payload: { partId: 'oled', rect: [0, 0, 8, 8], data: [0xaa] } },
     { type: 'log', payload: { level: 'info', text: 'hello' } },
     { type: 'error.ack', payload: { code: 'WS_MSG_INVALID', message: 'bad' } },
+    {
+      type: 'build.progress',
+      payload: { buildId: 'b1', phase: 'compiling', progress: 0.4, logLines: ['line1'] },
+    },
   ];
 
-  it('accepts all nine message types', () => {
+  it('accepts all ten message types', () => {
     for (const m of msgs) {
       expect(serverMsgSchema.safeParse(m).success, `should accept ${m.type}`).toBe(true);
     }
@@ -126,6 +130,21 @@ describe('serverMsgSchema（03-§2.4）', () => {
     ).toBe(false);
   });
 
+  it('rejects invalid build.progress shapes', () => {
+    expect(
+      serverMsgSchema.safeParse({
+        type: 'build.progress',
+        payload: { buildId: 'b1', phase: 'installing', progress: 0.5 },
+      }).success,
+    ).toBe(false);
+    expect(
+      serverMsgSchema.safeParse({
+        type: 'build.progress',
+        payload: { buildId: 'b1', phase: 'failed', progress: 1.5 },
+      }).success,
+    ).toBe(false);
+  });
+
   it('type alignment: ServerMsgType 枚举覆盖锁定', () => {
     const expected: readonly ServerMsgType[] = [
       'state',
@@ -137,6 +156,7 @@ describe('serverMsgSchema（03-§2.4）', () => {
       'fb.update',
       'log',
       'error.ack',
+      'build.progress',
     ];
     const actual = serverMsgSchema.options.map((o) => o.shape.type.value);
     expect([...actual].sort()).toEqual([...expected].sort());
