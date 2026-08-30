@@ -6,6 +6,7 @@ import type { CircuitDoc } from '@esp32-sim/shared';
 import { clientMsgSchema, type ClientMsg, type ServerMsg } from '@esp32-sim/shared';
 import type { AppConfig } from '../config/schema';
 import type { Db } from '../db/client';
+import { QemuGpioBridge, pullOfMode } from '../services/gpio.bridge';
 import type { BuildService } from '../services/build.service';
 import type { QemuManager } from '../services/qemu.manager';
 import { notFound } from '../utils/http-error';
@@ -18,7 +19,9 @@ import { notFound } from '../utils/http-error';
  * - build.progress：普通行 100ms 窗口聚合 logLines；critical 行（error/warning）立即 logLine；
  * - 心跳（06-§7.1.1 N20）：ws ping frame + 应用层 ping 消息；45s 未 pong → terminate；
  * - 断线保留 reconnectGraceMs（60s）供同 sid 重连，超时回收 QEMU；
- * - 速率：config.ws.msgRateLimitPerSec（超限 error.ack + 断开）。
+ * - 速率：config.ws.msgRateLimitPerSec（超限 error.ack + 断开）；
+ * - GPIO 桥（M5）：第二 serial ⇄ QemuGpioBridge；固件 gpio.write 帧 → ws 事件；
+ *   ws input.pin → 元件引脚映射板卡 GPIO → 桥注入（release 回退 pull 语义，05-§1.4）。
  */
 
 interface GwSession {
@@ -31,6 +34,17 @@ interface GwSession {
   boardType: string | null;
   qemuSessionId: string | null;
   serialSocket: net.Socket | null;
+  /** GPIO 桥（M5）：第二 serial 连接 + 帧编解码 */
+  gpioSocket: net.Socket | null;
+  bridge: QemuGpioBridge | null;
+  /** gpio.write 事件单调序号 */
+  gpioSeq: number;
+  /** 固件上报的 pull 语义（PIN_MODE 帧）→ release 回退电平 */
+  pinPull: Map<number, 0 | 1>;
+  /** 引脚邻接表（attach 时由 circuit 构建，input.pin 映射板卡 GPIO 用） */
+  adj: Map<string, string[]> | null;
+  /** 板卡 part 的 id（电路中 type = board-<boardType> 的 part） */
+  boardPartId: string | null;
   unsubBuild: (() => void) | null;
   graceTimer: NodeJS.Timeout | null;
   lifeTimer: NodeJS.Timeout;
@@ -54,7 +68,7 @@ export async function wsGatewayRoutes(
   fastify: FastifyInstance,
   opts: WsGatewayOptions,
 ): Promise<void> {
-  const { config, builds, qemu } = opts;
+  const { config, builds, qemu, db } = opts;
   const sessions = new Map<string, GwSession>();
 
   // ---- QEMU 非正常退出 → 会话 error（网关 unaware 的进程崩溃兜底） ----
@@ -62,6 +76,7 @@ export async function wsGatewayRoutes(
     const s = [...sessions.values()].find((x) => x.qemuSessionId === qemuSid);
     if (!s || s.state === 'closed') return;
     detachSerial(s);
+    detachBridge(s);
     s.qemuSessionId = null;
     const msg = `QEMU 进程退出（code=${code ?? 'null'}${signal ? `, signal=${signal}` : ''}）`;
     setState(s, 'error', msg);
@@ -112,6 +127,12 @@ export async function wsGatewayRoutes(
       boardType: null,
       qemuSessionId: null,
       serialSocket: null,
+      gpioSocket: null,
+      bridge: null,
+      gpioSeq: 0,
+      pinPull: new Map(),
+      adj: null,
+      boardPartId: null,
       unsubBuild: null,
       graceTimer: null,
       lifeTimer: setTimeout(() => {
@@ -206,9 +227,11 @@ export async function wsGatewayRoutes(
         return void onCtrl(s, msg.payload);
       case 'input.uart':
         return onInputUart(s, msg.payload.bytes);
+      case 'input.pin':
+        return onInputPin(s, msg.payload);
       default:
-        // input.pin / input.analog：GPIO 桥随 M5
-        sendErr(s, 'UNSUPPORTED', `${msg.type} 引擎B 随 M5 GPIO 桥接入`);
+        // input.analog：M7 ADC 桥接入
+        sendErr(s, 'UNSUPPORTED', `${msg.type} 暂未支持`);
     }
   }
 
@@ -224,6 +247,11 @@ export async function wsGatewayRoutes(
     s.circuit = p.circuit;
     s.firmwareId = p.firmwareId;
     s.boardType = p.boardType;
+    // M5 GPIO 桥：邻接表 + 板卡 part 识别（input.pin 映射板卡 GPIO 用）
+    s.adj = buildAdjacency(p.circuit);
+    s.boardPartId =
+      p.circuit.parts.find((part) => part.type === `board-${p.boardType}`)?.id ?? null;
+    s.pinPull = new Map();
     setState(s, 'attaching');
     resolveBuild(s);
   }
@@ -372,10 +400,58 @@ export async function wsGatewayRoutes(
           payload: { level: 'warn', text: `串口连接异常：${err.message}` },
         });
       });
+      attachGpioBridge(s, sessionId);
       setState(s, 'running');
     } catch (err) {
       setState(s, 'error', err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** GPIO 桥接线（M5）：桥断开不致会话失败（串口监视仍可用），仅告警 */
+  function attachGpioBridge(s: GwSession, sessionId: string): void {
+    detachBridge(s);
+    s.gpioSeq = 0;
+    void qemu
+      .connectGpioSerial(sessionId)
+      .then((gpioSocket) => {
+        // spawn 失败/会话已关时丢弃连接
+        if (s.qemuSessionId !== sessionId) {
+          gpioSocket.destroy();
+          return;
+        }
+        s.gpioSocket = gpioSocket;
+        s.bridge = new QemuGpioBridge(gpioSocket, {
+          onGpioWrite: (pin, level) => {
+            s.gpioSeq += 1;
+            send(s, { type: 'gpio.write', payload: { pin, level, seq: s.gpioSeq } });
+          },
+          onPinMode: (pin, mode) => {
+            const pull = pullOfMode(mode);
+            if (pull === null) s.pinPull.delete(pin);
+            else s.pinPull.set(pin, pull);
+          },
+        });
+        gpioSocket.on('close', () => {
+          if (s.gpioSocket === gpioSocket) {
+            s.gpioSocket = null;
+            s.bridge = null;
+          }
+        });
+        gpioSocket.on('error', () => {
+          gpioSocket.destroy();
+        });
+      })
+      .catch((err: unknown) => {
+        if (s.state === 'running') {
+          send(s, {
+            type: 'log',
+            payload: {
+              level: 'warn',
+              text: `GPIO 桥不可用（${err instanceof Error ? err.message : String(err)}），Pin 输入注入暂不可用`,
+            },
+          });
+        }
+      });
   }
 
   function onCtrl(s: GwSession, cmd: 'start' | 'pause' | 'reset' | 'stop'): void {
@@ -424,6 +500,64 @@ export async function wsGatewayRoutes(
     serial.write(Buffer.from(bytes));
   }
 
+  /**
+   * 引脚输入注入（M5，05-§1.4）：partId/pin → 板卡 GPIO（沿连接 BFS）→ 桥注入；
+   * release（按键松开）忽略 level，回退固件 pull 语义（无记录按 0）。
+   */
+  function onInputPin(
+    s: GwSession,
+    p: { partId: string; pin: string; level: 0 | 1; release?: boolean },
+  ): void {
+    if (s.state !== 'running' && s.state !== 'paused') {
+      sendErr(s, 'INVALID_STATE', '引擎未运行，输入注入被丢弃');
+      return;
+    }
+    if (s.qemuSessionId) qemu.touch(s.qemuSessionId);
+    const bridge = s.bridge;
+    if (!bridge) {
+      sendErr(s, 'NO_GPIO_BRIDGE', 'GPIO 桥未连接');
+      return;
+    }
+    const gpio = resolveGpio(s, p.partId, p.pin);
+    if (gpio === null) {
+      sendErr(s, 'NO_GPIO', `引脚 ${p.partId}:${p.pin} 未连接到板卡 GPIO`);
+      return;
+    }
+    const level: 0 | 1 = p.release ? (s.pinPull.get(gpio) ?? 0) : p.level;
+    bridge.injectInput(gpio, level);
+  }
+
+  /** 元件引脚 → 板卡 GPIO：板卡引脚直查 pinmap；元件引脚沿连接 BFS 找板卡引脚 */
+  function resolveGpio(s: GwSession, partId: string, pinName: string): number | null {
+    if (!s.boardPartId || !s.boardType) return null;
+    if (partId === s.boardPartId) return gpioOf(s.boardType, pinName);
+
+    const start = `${partId}:${pinName}`;
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const cur = queue.shift() as string;
+      for (const nxt of s.adj?.get(cur) ?? []) {
+        if (seen.has(nxt)) continue;
+        seen.add(nxt);
+        const idx = nxt.indexOf(':');
+        if (nxt.slice(0, idx) === s.boardPartId) {
+          return gpioOf(s.boardType, nxt.slice(idx + 1));
+        }
+        queue.push(nxt);
+      }
+    }
+    return null;
+  }
+
+  /** board_pinmaps 查询（catalog 启动导入，01-§6） */
+  function gpioOf(boardType: string, pinName: string): number | null {
+    const row = db
+      .prepare('SELECT gpio_no FROM board_pinmaps WHERE board_type = ? AND pin_name = ?')
+      .get(boardType, pinName) as { gpio_no: number } | undefined;
+    return row ? row.gpio_no : null;
+  }
+
   // ---- 内部：状态与会话生命周期 ----
 
   function setState(s: GwSession, state: GwSession['state'], error?: string): void {
@@ -439,6 +573,12 @@ export async function wsGatewayRoutes(
     s.serialSocket = null;
   }
 
+  function detachBridge(s: GwSession): void {
+    s.bridge = null;
+    s.gpioSocket?.destroy();
+    s.gpioSocket = null;
+  }
+
   async function destroySession(s: GwSession, reason: string): Promise<void> {
     if (s.state === 'closed') return;
     clearTimeout(s.graceTimer ?? undefined);
@@ -446,6 +586,7 @@ export async function wsGatewayRoutes(
     s.unsubBuild?.();
     s.unsubBuild = null;
     detachSerial(s);
+    detachBridge(s);
     if (s.qemuSessionId) {
       await qemu.dispose(s.qemuSessionId, reason);
       s.qemuSessionId = null;
@@ -468,4 +609,21 @@ export async function wsGatewayRoutes(
   function sendErr(s: GwSession, code: string, message: string): void {
     send(s, { type: 'error.ack', payload: { code, message } });
   }
+}
+
+/** 引脚邻接表（PinRef 双向边）；attach 时构建，M5 input.pin BFS 用 */
+function buildAdjacency(circuit: CircuitDoc): Map<string, string[]> {
+  const adj = new Map<string, string[]>();
+  const link = (a: string, b: string): void => {
+    const la = adj.get(a);
+    if (la) la.push(b);
+    else adj.set(a, [b]);
+    const lb = adj.get(b);
+    if (lb) lb.push(a);
+    else adj.set(b, [a]);
+  };
+  for (const c of circuit.connections) {
+    link(c.source, c.target);
+  }
+  return adj;
 }

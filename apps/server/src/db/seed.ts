@@ -78,12 +78,90 @@ const BLINK_MANIFEST: ExampleManifest = {
   ],
 };
 
+/** button-led 示例 diagram：按键 GPIO4（内部上拉、对地）→ LED GPIO2（M5 双引擎输入注入示例） */
+const BUTTON_LED_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 60, top: 60, rotate: 0, attrs: {} },
+    { id: 'btn1', type: 'wokwi-pushbutton', left: 420, top: 100, rotate: 0, attrs: {} },
+    { id: 'led1', type: 'wokwi-led', left: 420, top: 300, rotate: 0, attrs: { color: 'red' } },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO4', target: 'btn1:1.l', color: 'green', path: [] },
+    { id: 'w2', source: 'btn1:2.l', target: 'esp:GND.1', color: 'black', path: [] },
+    { id: 'w3', source: 'esp:GPIO2', target: 'led1:A', color: 'orange', path: [] },
+    { id: 'w4', source: 'led1:C', target: 'esp:GND.2', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const BUTTON_LED_MANIFEST: ExampleManifest = {
+  description: '按键 GPIO4 控制LED GPIO2：按下点亮/松开熄灭（M5 输入注入双引擎示例）',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'micropython-wasm',
+  diagram: BUTTON_LED_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        'from machine import Pin',
+        'import time',
+        '',
+        'btn = Pin(4, Pin.IN, Pin.PULL_UP)',
+        'led = Pin(2, Pin.OUT)',
+        '',
+        'last = None',
+        'while True:',
+        '    v = btn.value()',
+        '    if v != last:',
+        '        last = v',
+        '        led.value(0 if v else 1)',
+        '        print("LED OFF" if v else "LED ON")',
+        '    time.sleep_ms(20)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        'void setup() {',
+        '  pinMode(4, INPUT_PULLUP);',
+        '  pinMode(2, OUTPUT);',
+        '  Serial.begin(115200);',
+        '}',
+        '',
+        'int last = -1;',
+        '',
+        'void loop() {',
+        '  int v = digitalRead(4);',
+        '  if (v != last) {',
+        '    last = v;',
+        '    digitalWrite(2, v ? LOW : HIGH);',
+        '    Serial.println(v ? "LED OFF" : "LED ON");',
+        '  }',
+        '  delay(20);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
 const BUILT_IN_EXAMPLES: Array<{
   id: string;
   name: string;
   category: string;
   manifest: ExampleManifest;
-}> = [{ id: 'blink', name: 'blink（LED 闪烁）', category: 'starter', manifest: BLINK_MANIFEST }];
+}> = [
+  { id: 'blink', name: 'blink（LED 闪烁）', category: 'starter', manifest: BLINK_MANIFEST },
+  {
+    id: 'button-led',
+    name: 'button-led（按键控制 LED）',
+    category: 'starter',
+    manifest: BUTTON_LED_MANIFEST,
+  },
+];
 
 /** 幂等写入 examples 表；返回本次新增的示例 id 列表 */
 export function seedExamples(db: Db): string[] {

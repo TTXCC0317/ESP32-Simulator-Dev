@@ -23,7 +23,10 @@ export type QemuSessionState = 'starting' | 'running' | 'stopping' | 'dead';
 export interface QemuSessionInfo {
   sessionId: string;
   pid: number | null;
+  /** UART0（串口监视器通道） */
   port: number;
+  /** UART1（GPIO 桥通道，M5；桥关闭/不可用时仍分配但可无连接） */
+  gpioPort: number;
   state: QemuSessionState;
   boardType: string;
   lastActiveAt: number;
@@ -84,6 +87,8 @@ export class QemuManager {
   async spawnSession(p: { firmwarePath: string; boardType: string }): Promise<{
     sessionId: string;
     port: number;
+    /** GPIO 桥通道端口（第二 serial，UART1；M5） */
+    gpioPort: number;
   }> {
     if (this.sessions.size >= this.config.ws.maxConcurrentSessions) {
       throw new Error(
@@ -98,7 +103,11 @@ export class QemuManager {
     mkdirSync(dir, { recursive: true });
     cpSync(p.firmwarePath, join(dir, 'flash.img'));
 
+    // 两次分配之间立即占位，避免同一端口被分配两次（UART0 与 GPIO 桥通道互异）
     const port = await this.allocPort();
+    this.usedPorts.add(port);
+    const gpioPort = await this.allocPort();
+    this.usedPorts.add(gpioPort);
     const qemuBin =
       target.qemu === 'xtensa' ? this.config.tools.qemuXtensa : this.config.tools.qemuRiscv32;
     if (!qemuBin) {
@@ -108,7 +117,7 @@ export class QemuManager {
       );
     }
 
-    // N17 参数表（M4 无 GPIO 桥；-S 不用：attach 即运行）
+    // N17 参数表（M5：第二 serial = UART1 GPIO 桥通道；-S 不用：attach 即运行）
     const args = [
       '-machine',
       target.machine,
@@ -117,6 +126,8 @@ export class QemuManager {
       `file=${join(dir, 'flash.img')},if=mtd,format=raw`,
       '-serial',
       `tcp:127.0.0.1:${port},server,nowait`,
+      '-serial',
+      `tcp:127.0.0.1:${gpioPort},server,nowait`,
       '-monitor',
       'none',
       '-nographic',
@@ -132,6 +143,7 @@ export class QemuManager {
         sessionId,
         pid: child.pid ?? null,
         port,
+        gpioPort,
         state: 'starting',
         boardType: p.boardType,
         lastActiveAt: this.now(),
@@ -142,7 +154,6 @@ export class QemuManager {
       stopping: false,
     };
     this.sessions.set(sessionId, session);
-    this.usedPorts.add(port);
 
     child.once('exit', (code, signal) => {
       const s = this.sessions.get(sessionId);
@@ -150,6 +161,7 @@ export class QemuManager {
       clearTimeout(s.idleTimer);
       s.info.state = 'dead';
       this.usedPorts.delete(s.info.port);
+      this.usedPorts.delete(s.info.gpioPort);
       if (!s.stopping) {
         for (const cb of this.exitListeners) cb(sessionId, code, signal);
       }
@@ -159,7 +171,7 @@ export class QemuManager {
     // spawn 即视为 running（N17：attach 后立即运行，无 -S 暂停）
     session.info.state = 'running';
 
-    return { sessionId, port };
+    return { sessionId, port, gpioPort };
   }
 
   get(sessionId: string): QemuSessionInfo | null {
@@ -191,6 +203,25 @@ export class QemuManager {
         if (Date.now() > deadline) {
           throw new Error(
             `QEMU 串口连接失败（port ${s.info.port}）：${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
+  }
+
+  /** 连接 GPIO 桥通道（第二 serial，UART1；重试语义同 connectSerial） */
+  async connectGpioSerial(sessionId: string): Promise<net.Socket> {
+    const s = this.sessions.get(sessionId);
+    if (!s) throw new Error(`会话不存在：${sessionId}`);
+    const deadline = Date.now() + SERIAL_CONNECT_TIMEOUT_MS;
+    for (;;) {
+      try {
+        return await this.tryConnect(s.info.gpioPort);
+      } catch (err) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `QEMU GPIO 桥连接失败（port ${s.info.gpioPort}）：${err instanceof Error ? err.message : String(err)}`,
           );
         }
         await new Promise((r) => setTimeout(r, 150));
@@ -246,6 +277,7 @@ export class QemuManager {
 
     s.info.state = 'dead';
     this.usedPorts.delete(s.info.port);
+    this.usedPorts.delete(s.info.gpioPort);
     rmSync(s.dir, { recursive: true, force: true });
     this.sessions.delete(sessionId);
     void reason; // 日志由调用方记录

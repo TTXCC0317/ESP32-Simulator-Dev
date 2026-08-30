@@ -196,7 +196,12 @@ export class RemoteSessionClient implements SimulationEngine {
     } else if (ev.type === 'pin.level') {
       this.send({
         type: 'input.pin',
-        payload: { partId: ev.partId, pin: ev.pin, level: ev.level },
+        payload: {
+          partId: ev.partId,
+          pin: ev.pin,
+          level: ev.level,
+          ...(ev.release ? { release: true } : {}),
+        },
       });
     } else if (ev.type === 'analog.value') {
       this.send({

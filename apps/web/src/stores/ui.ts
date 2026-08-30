@@ -18,6 +18,8 @@ export interface UiState {
   inspectorCollapsed: boolean;
   bottomCollapsed: boolean;
   bottomHeight: number;
+  /** 蜂鸣器静音（05-§1.8 E4）：true 时跳过 OscillatorNode.start（视觉照常） */
+  muted: boolean;
   /** 画布截图钩子（04-§8 D3）：保存工程前由 CircuitCanvas 注册，生成 240×160 PNG dataURL */
   stageCapture: (() => string | null) | null;
   setTheme: (t: Theme) => void;
@@ -27,6 +29,7 @@ export interface UiState {
   toggleInspector: () => void;
   toggleBottom: () => void;
   setBottomHeight: (h: number) => void;
+  toggleMuted: () => void;
   setStageCapture: (fn: (() => string | null) | null) => void;
 }
 
@@ -51,6 +54,7 @@ export const useUiStore = create<UiState>()(
       inspectorCollapsed: false,
       bottomCollapsed: false,
       bottomHeight: BOTTOM_DEFAULT,
+      muted: false,
       stageCapture: null,
       setTheme: (t) => {
         applyTheme(t);
@@ -67,6 +71,7 @@ export const useUiStore = create<UiState>()(
       toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
       toggleBottom: () => set((s) => ({ bottomCollapsed: !s.bottomCollapsed })),
       setBottomHeight: (h) => set({ bottomHeight: clampBottomHeight(h) }),
+      toggleMuted: () => set((s) => ({ muted: !s.muted })),
       setStageCapture: (fn) => set({ stageCapture: fn }),
     }),
     {
@@ -79,6 +84,7 @@ export const useUiStore = create<UiState>()(
         inspectorCollapsed: s.inspectorCollapsed,
         bottomCollapsed: s.bottomCollapsed,
         bottomHeight: s.bottomHeight,
+        muted: s.muted,
       }),
     },
   ),

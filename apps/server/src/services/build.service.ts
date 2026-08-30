@@ -1,9 +1,18 @@
 import { execa, type ResultPromise } from 'execa';
-import { cpSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config/schema';
 import type { Db } from '../db/client';
+import { appRoot } from '../utils/app-root';
 
 /**
  * BuildService（03-§7.1）：arduino-cli 编译队列
@@ -61,6 +70,18 @@ const BOARD_TOOLCHAIN: Record<string, { fqbn: string; chip: string }> = {
 
 /** 进度估算分母：arduino-cli 全量编译 ≈ 200 行输出 */
 const ESTIMATE_LINES = 200;
+
+/**
+ * M5 GPIO 桥（03-§7.2 HAL 方案）：glue 源文件随 sketch 一起编译
+ * （tools/bridge-glue/esp32sim_bridge.c，无 core 污染）。
+ *
+ * 拦截机制为强符号覆盖：core 3.x 的 pinMode/digitalWrite 等是 __pinMode 等真实
+ * 实现的 weak alias，glue 强定义公开符号即被链接器优先采用（含 core 内部引用），
+ * 无需 -Wl,--wrap（wrap 只重定向 undefined reference，对 weak alias 定义静默失效，
+ * M5 golden 实测踩坑）。
+ */
+const BRIDGE_GLUE_SRC = 'esp32sim_bridge.c';
+const BRIDGE_GLUE_DIR = resolve(appRoot(), 'tools', 'bridge-glue');
 
 interface BuildJob {
   buildId: string;
@@ -222,6 +243,7 @@ export class BuildService {
       const esptool = resolve(process.cwd(), this.config.tools.esptool);
 
       // 1) arduino-cli compile（超时由 runner 的 timeoutMs 强杀）
+      //    GPIO 桥拦截走 glue 强符号覆盖（03-§7.2 M5），编译命令无需注入
       let lines = 0;
       const compile = await this.run(
         arduinoCli,
@@ -296,6 +318,12 @@ export class BuildService {
     mkdirSync(srcDir, { recursive: true });
     for (const f of files) {
       writeFileSync(join(srcDir, basename(f.path)), f.content, 'utf8');
+    }
+    // M5 GPIO 桥 glue 随 sketch 编译（缺失时编译命令仍下发，链接错误由日志暴露）
+    try {
+      copyFileSync(join(BRIDGE_GLUE_DIR, BRIDGE_GLUE_SRC), join(srcDir, BRIDGE_GLUE_SRC));
+    } catch {
+      this.appendLog(buildId, `[warn] GPIO 桥 glue 源缺失（${BRIDGE_GLUE_DIR}），跳过注入`);
     }
     return srcDir;
   }

@@ -5,6 +5,7 @@ import type {
   EngineStatus,
   SimulationEngine,
 } from '@esp32-sim/shared';
+import { useRuntimeStore } from './runtime';
 
 /**
  * simStore（03-§6.2）：仿真状态 + 引擎事件分发。
@@ -75,7 +76,10 @@ export const simSession = {
     if (attachedEngine === next) return;
     attachedEngine = next;
     engine = next;
-    // 引擎事件统一转 simStore 分发（组件经 subscribe(type, cb) 消费）
+    // 新会话：清空上一轮元件运行时状态（gpio.write/pwm.duty 汇聚）
+    useRuntimeStore.getState().clear();
+    // 引擎事件统一转 simStore 分发（组件经 subscribe(type, cb) 消费）；
+    // gpio.write/pwm.duty 同步 runtimeStore（元件渲染，M5）
     for (const type of [
       'gpio.write',
       'pwm.duty',
@@ -84,7 +88,16 @@ export const simSession = {
       'spi.txn',
       'fb.update',
     ] as const) {
-      next.on(type, (payload) => dispatch(type, payload));
+      next.on(type, (payload) => {
+        if (type === 'gpio.write') {
+          const p = payload as EngineEventMap['gpio.write'];
+          useRuntimeStore.getState().applyGpio(p.pin, p.level);
+        } else if (type === 'pwm.duty') {
+          const p = payload as EngineEventMap['pwm.duty'];
+          useRuntimeStore.getState().applyPwm(p.pin, p.duty, p.freq);
+        }
+        dispatch(type, payload);
+      });
     }
     next.on('log', (payload) => dispatch('log', payload));
     next.on('state', (payload) => {
@@ -116,6 +129,7 @@ export const simSession = {
     engine?.dispose();
     engine = null;
     attachedEngine = null;
+    useRuntimeStore.getState().clear();
     useSimStore.getState().setStatus('idle');
   },
 };

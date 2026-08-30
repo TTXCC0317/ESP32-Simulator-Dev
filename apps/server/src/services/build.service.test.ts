@@ -121,6 +121,21 @@ describe('BuildService 状态机（03-§7.1）', () => {
     expect(service.logs(buildId).some((l) => l.includes('error: expected'))).toBe(true);
   });
 
+  it('M5 GPIO 桥：glue 源随 sketch 落盘（强符号覆盖，无需 build-property 注入）', async () => {
+    const runner = makeRunner('ok');
+    const { service } = setup(runner);
+    const { buildId } = service.submit('p1', 'arduino');
+    await service.waitForFinish(buildId);
+
+    // 强符号覆盖方案：core 3.x 的 digitalWrite 等是 weak alias，glue 强定义公开符号
+    // 即被链接器优先采用，编译命令无需 -Wl,--wrap（wrap 对 weak alias 静默失效）
+    const cliCall = runner.calls[0] as { file: string; args: string[]; cwd: string };
+    expect(cliCall.args).not.toContain('--build-property');
+
+    // glue 源文件注入 sketch 沙箱（随固件一起编译）
+    expect(existsSync(join(cliCall.cwd, 'src', 'sketch', 'esp32sim_bridge.c'))).toBe(true);
+  });
+
   it('编译超时 → failed（runner 以 timeout 错误终止）', async () => {
     const { service } = setup(makeRunner('timeout'));
     const { buildId } = service.submit('p1', 'arduino');

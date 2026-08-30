@@ -52,9 +52,24 @@ const btnDef: PartDefinition = {
   simulator: { listens: [], produces: ['pin.level'], behavior: '按下导通' },
 };
 
+const resDef: PartDefinition = {
+  type: 'wokwi-resistor',
+  name: '电阻',
+  category: 'io',
+  defVersion: 1,
+  pins: [
+    { name: '1', role: 'passive', x: 0, y: 14 },
+    { name: '2', role: 'passive', x: 72, y: 14 },
+  ],
+  attrs: [],
+  renderer: { asset: 'resistor.svg', width: 72, height: 28 },
+  simulator: { listens: [], behavior: 'passive-through' },
+};
+
 const partDefs = new Map([
   ['wokwi-led', ledDef],
   ['wokwi-pushbutton', btnDef],
+  ['wokwi-resistor', resDef],
 ]);
 
 function makeCircuit(connections: ConnInput[] = []): CircuitDoc {
@@ -65,6 +80,7 @@ function makeCircuit(connections: ConnInput[] = []): CircuitDoc {
       { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 0, top: 0, rotate: 0, attrs: {} },
       { id: 'led1', type: 'wokwi-led', left: 300, top: 100, rotate: 0, attrs: {} },
       { id: 'btn1', type: 'wokwi-pushbutton', left: 300, top: 220, rotate: 0, attrs: {} },
+      { id: 'res1', type: 'wokwi-resistor', left: 300, top: 320, rotate: 0, attrs: {} },
     ],
     connections: connections.map((c) => ({
       ...c,
@@ -288,5 +304,38 @@ describe('PinBus 注入解除（M5 releasePin，05-§1.4 按键松开）', () =>
     );
     bus.releasePin('led1:C');
     expect(bus.read('led1:C')).toBe(0);
+  });
+});
+
+describe('PinBus passive 组内合并（M5，05-§1.5 E2 直通 / §1.4 按键组内）', () => {
+  it('电阻 1↔2 直通：GPIO4 → R.1，R.2 → LED.A，写 GPIO4 从 led1:A 读到（跨电阻传播）', () => {
+    const bus = new PinBus();
+    bus.load(
+      makeCircuit([
+        { id: 'w1', source: 'esp:GPIO4', target: 'res1:1', color: 'green', path: [] },
+        { id: 'w2', source: 'res1:2', target: 'led1:A', color: 'green', path: [] },
+        { id: 'w3', source: 'led1:C', target: 'esp:GND.1', color: 'black', path: [] },
+      ]),
+      board,
+      partDefs,
+    );
+    const t = bus.claimOutput('esp:GPIO4');
+    bus.write(t, 1);
+    expect(bus.read('led1:A')).toBe(1);
+    // 电阻两端同网络 → 两端各接一个输出视为多驱动冲突（E2）
+    const t2 = bus.claimOutput('led1:A');
+    bus.write(t2, 0);
+    expect(bus.conflict('esp:GPIO4')).toBe(true);
+  });
+
+  it('按键组内常通：1.l↔1.r 同网络（05-§1.4 内部连通）', () => {
+    const bus = new PinBus();
+    bus.load(makeCircuit(), board, partDefs);
+    bus.claimInput('btn1:1.l', 'up');
+    bus.injectPin('btn1:1.l', 0);
+    expect(bus.read('btn1:1.r')).toBe(0);
+    // 组间（1.x 与 2.x）不合并：按下导通由注入语义模拟
+    bus.claimInput('btn1:2.l', 'up');
+    expect(bus.read('btn1:2.l')).toBe(1);
   });
 });

@@ -26,7 +26,7 @@ afterEach(() => {
   }
 });
 
-/** fake QEMU 子进程：记录 args；kill 触发 exit；模拟 -serial tcp server 监听 */
+/** fake QEMU 子进程：记录 args；kill 触发 exit；模拟 -serial tcp server 监听（UART0 + GPIO 桥） */
 class FakeChild extends EventEmitter {
   readonly args: string[];
   pid = 42_000 + Math.floor(Math.random() * 1000);
@@ -35,25 +35,43 @@ class FakeChild extends EventEmitter {
   killCalls: Array<string | undefined> = [];
   kill: (signal?: NodeJS.Signals) => boolean;
   readonly serialServer: net.Server;
+  readonly gpioServer: net.Server | null;
 
   constructor(args: string[]) {
     super();
     this.args = args;
-    const si = args.indexOf('-serial');
-    const spec = args[si + 1] ?? '';
-    const port = Number(/tcp:127\.0\.0\.1:(\d+),/.exec(spec)?.[1] ?? 0);
+    const ports = serialPortsOf(args);
+    const p0 = ports[0] ?? 0;
+    const p1 = ports[1] ?? 0;
     this.serialServer = net.createServer();
-    if (port > 0) this.serialServer.listen(port, '127.0.0.1');
+    if (p0 > 0) this.serialServer.listen(p0, '127.0.0.1');
+    this.gpioServer = null;
+    if (p1 > 0) {
+      this.gpioServer = net.createServer();
+      this.gpioServer.listen(p1, '127.0.0.1');
+    }
 
     this.kill = (signal?: NodeJS.Signals): boolean => {
       this.killCalls.push(signal);
       if (this.exitCode !== null) return true;
       this.exitCode = signal === 'SIGKILL' ? 137 : 0;
       this.serialServer.close();
+      this.gpioServer?.close();
       queueMicrotask(() => this.emit('exit', this.exitCode, signal ?? null));
       return true;
     };
   }
+}
+
+/** 提取 args 中所有 -serial tcp 端口（按出现顺序：UART0、UART1 桥） */
+function serialPortsOf(args: string[]): number[] {
+  const ports: number[] = [];
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '-serial') {
+      ports.push(Number(/tcp:127\.0\.0\.1:(\d+),/.exec(args[i + 1] ?? '')?.[1] ?? 0));
+    }
+  }
+  return ports;
 }
 
 interface Setup {
@@ -106,7 +124,7 @@ describe('QemuManager（03-§7.2 N17）', () => {
     expect(existsSync(join(dir, 'flash', sessionId, 'flash.img'))).toBe(true);
   });
 
-  it('N17 参数表：-machine esp32、-drive if=mtd、-serial tcp server nowait、无 GPIO 桥（M4）', async () => {
+  it('N17 参数表：-machine esp32、-drive if=mtd、双 -serial tcp server nowait（UART0 + GPIO 桥）', async () => {
     const { mgr, children, firmwarePath } = setup();
     await mgr.spawnSession({ firmwarePath, boardType: 'esp32-devkit-c-v4' });
 
@@ -116,6 +134,8 @@ describe('QemuManager（03-§7.2 N17）', () => {
     expect(args[args.indexOf('-monitor') + 1]).toBe('none');
     expect(args).toContain('-nographic');
     expect(args.filter((a) => a.startsWith('-gpio'))).toHaveLength(0);
+    // M5：第二 -serial = UART1 GPIO 桥通道
+    expect(serialPortsOf(args)).toHaveLength(2);
     expect(args.some((a) => /^tcp:127\.0\.0\.1:\d+,server,nowait$/.test(a))).toBe(true);
   });
 
@@ -210,5 +230,25 @@ describe('QemuManager（03-§7.2 N17）', () => {
     expect(sock.remotePort).toBe(mgr.get(sessionId)?.port);
     sock.destroy();
     await mgr.dispose(sessionId, 'test');
+  });
+
+  it('M5 GPIO 桥：gpioPort 独立分配、connectGpioSerial 连上第二 serial、dispose 双端口回收', async () => {
+    const { mgr, firmwarePath } = setup();
+    const { sessionId } = await mgr.spawnSession({ firmwarePath, boardType: 'esp32-devkit-c-v4' });
+    const info = mgr.get(sessionId);
+    expect(info?.gpioPort).toBeGreaterThanOrEqual(40_000);
+    expect(info?.gpioPort).toBeLessThanOrEqual(41_000);
+    expect(info?.gpioPort).not.toBe(info?.port);
+
+    const sock = await mgr.connectGpioSerial(sessionId);
+    expect(sock.remotePort).toBe(info?.gpioPort);
+    sock.destroy();
+
+    // dispose 后两个端口都回收：新会话从池头重新分配（可复用旧 gpioPort），且自身两端口互异
+    await mgr.dispose(sessionId, 'test');
+    const b = await mgr.spawnSession({ firmwarePath, boardType: 'esp32-devkit-c-v4' });
+    expect(b.port).not.toBe(b.gpioPort);
+    expect(b.port).toBeLessThanOrEqual(info?.port ?? 0);
+    await mgr.dispose(b.sessionId, 'test');
   });
 });

@@ -1,4 +1,5 @@
 import { api } from '../api/client';
+import { unlockAudio } from '../audio/ctx';
 import { useCircuitStore } from '../circuit/circuitStore';
 import { useProjectStore } from '../stores/project';
 import { simSession, useSimStore } from '../stores/sim';
@@ -17,6 +18,8 @@ function toMessage(err: unknown): string {
 
 /** ▶ 运行（idle/paused/error 时可用；重复点击先释放旧会话） */
 export async function runSession(): Promise<void> {
+  // AudioContext 手势解锁（05-§1.8 E4）：▶ 运行属用户手势，一次性 resume
+  unlockAudio();
   const { engineKind } = useSimStore.getState();
 
   simSession.dispose();

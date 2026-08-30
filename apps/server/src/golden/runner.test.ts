@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import { appConfigSchema } from '../config/schema';
 import { openDatabase } from '../db/client';
 import { runMigrations } from '../db/migrator';
-import { assertSerialCycle, runGoldenEngineA, runGoldenEngineB, loadGoldenScript } from './runner';
+import { MODE_INPUT, MODE_PULLUP } from '../services/gpio.bridge';
+import {
+  assertSerialCycle,
+  runGoldenEngineA,
+  runGoldenEngineB,
+  loadGoldenScript,
+  type GoldenGpioChannel,
+} from './runner';
+import { goldenInputEventSchema } from './golden-schema';
 import type { GoldenScript } from './golden-schema';
 
 /**
@@ -134,6 +142,24 @@ describe('golden 剧本', () => {
     expect(s.expect.gpio).toMatchObject({ pin: 4 });
   });
 
+  it('examples/button-led/golden.json：输入序列 + GPIO 断言字段齐全（M5）', () => {
+    const s = loadGoldenScript('button-led');
+    expect(s.exampleId).toBe('button-led');
+    expect(s.input).toHaveLength(4);
+    expect(s.input?.[0]).toMatchObject({ atMs: 2000, gpio: 4, level: 0 });
+    expect(s.input?.[1]).toMatchObject({ gpio: 4, release: true });
+    expect(s.expect.serialCycle).toEqual(['LED ON', 'LED OFF']);
+    expect(s.expect.gpio).toMatchObject({ pin: 2, highs: 2, lows: 2 });
+  });
+
+  it('input 事件 schema：atMs/gpio/level 解析；非法 level/atMs 拒绝', () => {
+    expect(
+      goldenInputEventSchema.parse({ atMs: 2000, gpio: 4, level: 0, release: true }),
+    ).toMatchObject({ gpio: 4, release: true });
+    expect(goldenInputEventSchema.safeParse({ atMs: 0, gpio: 2, level: 2 }).success).toBe(false);
+    expect(goldenInputEventSchema.safeParse({ atMs: -1, gpio: 2, level: 0 }).success).toBe(false);
+  });
+
   it('引擎A：产物未入库 → 引导性失败（mpyDir 指向空目录即复现）', async () => {
     const db = setupDb();
     const r = await runGoldenEngineA(baseScript(), {
@@ -143,5 +169,117 @@ describe('golden 剧本', () => {
     // 产物缺失：返回 skip 引导而非崩溃（CI 环境无 wasm 产物同样命中）
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/wasm 产物未入库|联调/i);
+  });
+});
+
+/**
+ * 伪固件 GPIO 桥（stub channel）：注册时上报 PIN_MODE(4, INPUT_PULLUP)（模拟
+ * setup() 的 pinMode），按键 GPIO4 注入反应为 LED GPIO2 写出（按下置高/释放置低）。
+ */
+function fakeFirmwareChannel(injected: Array<{ pin: number; level: 0 | 1 }>): GoldenGpioChannel {
+  let onWrite: ((pin: number, level: 0 | 1) => void) | null = null;
+  return {
+    onGpioWrite(cb) {
+      onWrite = cb;
+    },
+    onPinMode(cb) {
+      cb(4, MODE_INPUT | MODE_PULLUP);
+    },
+    injectInput(pin, level) {
+      injected.push({ pin, level });
+      if (pin === 4) onWrite?.(2, level === 0 ? 1 : 0);
+    },
+  };
+}
+
+describe('引擎B 输入注入 + GPIO 断言（M5，stub gpioChannel）', () => {
+  const inputScript = (): GoldenScript => ({
+    ...baseScript(),
+    input: [
+      { atMs: 30, gpio: 4, level: 0 },
+      { atMs: 80, gpio: 4, level: 0, release: true },
+      { atMs: 130, gpio: 4, level: 0 },
+      { atMs: 180, gpio: 4, level: 0, release: true },
+    ],
+    expect: { serialCycle: ['LED ON', 'LED OFF'], gpio: { pin: 2, highs: 2, lows: 2 } },
+  });
+
+  function setup(dirKey: string) {
+    const db = setupDb();
+    const dir = mkdtempSync(join(tmpdir(), dirKey));
+    const config = appConfigSchema.parse({
+      builds: { dir: join(dir, 'builds') },
+      flash: { dir: join(dir, 'flash') },
+      tools: { qemuXtensa: 'qemu-fake', qemuRiscv32: 'qemu-fake' },
+    });
+    return { db, dir, config };
+  }
+
+  it('input 序列按 atMs 注入（release 回退 pullup 电平 1）→ GPIO_WRITE 计数断言通过', async () => {
+    const { db, dir, config } = setup('golden-b-');
+    const injected: Array<{ pin: number; level: 0 | 1 }> = [];
+    const result = await runGoldenEngineB(inputScript(), {
+      db,
+      config,
+      buildRunner: async (_f, _a, o) => {
+        o.onLine('ok');
+        return { exitCode: 0 };
+      },
+      gpioChannel: fakeFirmwareChannel(injected),
+      serialCollector: async (onLine) => {
+        // 等待 input 序列 4 次注入全部完成（真实路径中由 durationMs 窗口保证）
+        const t0 = Date.now();
+        while (injected.length < 4 && Date.now() - t0 < 2000) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        onLine('LED ON');
+        onLine('LED OFF');
+        onLine('LED ON');
+        onLine('LED OFF');
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.gpio).toEqual({ pin: 2, highs: 2, lows: 2 });
+    // 注入序列：按下 0 → 释放回退 pullup 1 ×2 轮（05-§1.4 release 语义）
+    expect(injected).toEqual([
+      { pin: 4, level: 0 },
+      { pin: 4, level: 1 },
+      { pin: 4, level: 0 },
+      { pin: 4, level: 1 },
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+    db.close();
+  });
+
+  it('GPIO 计数不达标 → ok=false + gpio 明细', async () => {
+    const { db, dir, config } = setup('golden-b-fail-');
+    const injected: Array<{ pin: number; level: 0 | 1 }> = [];
+    const result = await runGoldenEngineB(inputScript(), {
+      db,
+      config,
+      buildRunner: async (_f, _a, o) => {
+        o.onLine('ok');
+        return { exitCode: 0 };
+      },
+      // 只按一次不释放 → LED 仅一轮置高/无释放（计数不足）
+      gpioChannel: {
+        onGpioWrite: (cb) => cb(2, 1),
+        onPinMode: () => {},
+        injectInput: (pin, level) => injected.push({ pin, level }),
+      },
+      serialCollector: async (onLine) => {
+        onLine('LED ON');
+        onLine('LED OFF');
+        onLine('LED ON');
+        onLine('LED OFF');
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('gpio pin2');
+    expect(result.gpio).toEqual({ pin: 2, highs: 1, lows: 0 });
+    rmSync(dir, { recursive: true, force: true });
+    db.close();
   });
 });

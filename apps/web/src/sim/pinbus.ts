@@ -12,6 +12,21 @@ export type Pull = 'up' | 'down' | 'none';
 export type Level = 0 | 1;
 export type NetId = string;
 
+/**
+ * 元件内部网络表（05-§1.4/§1.5 E2）：passive 引脚组内直通合并（与导线等价）。
+ * - 电阻 1↔2：直通（passive-through）；
+ * - 按键 1.l↔1.r、2.l↔2.r：内部常通（按下时两组导通由输入注入语义模拟，05-§1.4）；
+ * - 滑动开关不静态合并：位置导通语义由注入/释放模拟（05-§1.7，M5）。
+ * net-map.ts 的网络映射与该表保持一致（前端 BFS 复用）。
+ */
+export const PART_INTERNAL_NETS: Record<string, string[][]> = {
+  'wokwi-resistor': [['1', '2']],
+  'wokwi-pushbutton': [
+    ['1.l', '1.r'],
+    ['2.l', '2.r'],
+  ],
+};
+
 export type DriverToken = number;
 export type ReaderToken = number;
 
@@ -125,9 +140,9 @@ export class PinBus {
       }
     }
 
-    // 2) 其余元件实例引脚
+    // 2) 其余元件实例引脚（板卡 part 也注册：partDef 提供 BOARD_DEF 缺失的
+    //    GND.1/3V3/5V/EN 电源引脚 role（config/parts 与 config/boards 引脚集互补））
     for (const part of circuit.parts) {
-      if (part.type === circuit.boardType) continue;
       const def = partDefs.get(part.type);
       if (!def) continue; // 未知类型由 CircuitValidation 校验兜底，这里跳过
       for (const pin of def.pins) {
@@ -135,6 +150,19 @@ export class PinBus {
           `${part.id}:${pin.name}` as PinRef,
           pin.role === 'gnd' ? 'gnd' : pin.role === 'power' ? 'power' : null,
         );
+      }
+      // passive 组内直通合并（E2：电阻两端、按键组内与导线等价）
+      const groups = PART_INTERNAL_NETS[part.type];
+      if (groups) {
+        for (const group of groups) {
+          const [first, ...rest] = group;
+          if (!first) continue;
+          uf.makeSet(`${part.id}:${first}` as PinRef);
+          for (const name of rest) {
+            uf.makeSet(`${part.id}:${name}` as PinRef);
+            uf.union(`${part.id}:${first}`, `${part.id}:${name}`);
+          }
+        }
       }
     }
 

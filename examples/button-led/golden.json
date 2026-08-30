@@ -1,0 +1,14 @@
+{
+  "exampleId": "button-led",
+  "durationMs": 8000,
+  "input": [
+    { "atMs": 2000, "gpio": 4, "level": 0 },
+    { "atMs": 3000, "gpio": 4, "level": 0, "release": true },
+    { "atMs": 4500, "gpio": 4, "level": 0 },
+    { "atMs": 5500, "gpio": 4, "level": 0, "release": true }
+  ],
+  "expect": {
+    "serialCycle": ["LED ON", "LED OFF"],
+    "gpio": { "pin": 2, "highs": 2, "lows": 2 }
+  }
+}

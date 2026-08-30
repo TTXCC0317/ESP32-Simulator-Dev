@@ -98,30 +98,40 @@ class WsClient {
   }
 }
 
-/** fake QEMU：记录 args；-serial tcp 模拟 server 监听并收集连接 */
+/** fake QEMU：记录 args；所有 -serial tcp 模拟 server 监听并收集连接 */
 class FakeQemu extends EventEmitter {
   readonly args: string[];
+  readonly ports: number[];
   readonly conns: net.Socket[] = [];
   pid = 999;
   exitCode: number | null = null;
   signalCode: string | null = null;
   kill: (signal?: NodeJS.Signals) => boolean;
-  private readonly server: net.Server;
+  private readonly servers: net.Server[] = [];
 
   constructor(args: string[]) {
     super();
     this.args = args;
-    const si = args.indexOf('-serial');
-    const port = Number(/tcp:127\.0\.0\.1:(\d+),/.exec(args[si + 1] ?? '')?.[1] ?? 0);
-    this.server = net.createServer();
-    if (port > 0) {
-      this.server.on('connection', (c) => this.conns.push(c));
-      this.server.listen(port, '127.0.0.1');
+    this.ports = [];
+    for (let i = 0; i < args.length - 1; i++) {
+      if (args[i] === '-serial') {
+        const p = Number(/tcp:127\.0\.0\.1:(\d+),/.exec(args[i + 1] ?? '')?.[1] ?? 0);
+        if (p > 0) this.ports.push(p);
+      }
+    }
+    for (const port of this.ports) {
+      const srv = net.createServer();
+      srv.on('connection', (c) => {
+        this.conns.push(c);
+        this.emit('conn', c);
+      });
+      srv.listen(port, '127.0.0.1');
+      this.servers.push(srv);
     }
     this.kill = (signal?: NodeJS.Signals): boolean => {
       if (this.exitCode !== null) return true;
       this.exitCode = 0;
-      this.server.close();
+      for (const srv of this.servers) srv.close();
       for (const c of this.conns) c.destroy();
       queueMicrotask(() => this.emit('exit', 0, signal ?? null));
       return true;
@@ -131,9 +141,32 @@ class FakeQemu extends EventEmitter {
   /** 模拟 QEMU 异常退出（非主动 kill） */
   crash(code = 1): void {
     this.exitCode = code;
-    this.server.close();
+    for (const srv of this.servers) srv.close();
     for (const c of this.conns) c.destroy();
     this.emit('exit', code, null);
+  }
+
+  /** 取指定端口的已连接 socket（0=UART0 串口；1=GPIO 桥） */
+  connOn(listenPort: number): net.Socket | undefined {
+    return this.conns.find((c) => c.localPort === listenPort);
+  }
+
+  /** 等待指定端口有连接（网关异步 connect） */
+  async waitConn(listenPort: number, timeoutMs = 3000): Promise<net.Socket> {
+    const hit = this.connOn(listenPort);
+    if (hit) return hit;
+    return new Promise((res, rej) => {
+      const timer = setTimeout(
+        () => rej(new Error(`等待连接超时（port ${listenPort}）`)),
+        timeoutMs,
+      );
+      this.once('conn', (c: net.Socket) => {
+        if (c.localPort === listenPort) {
+          clearTimeout(timer);
+          res(c);
+        }
+      });
+    });
   }
 }
 
@@ -299,14 +332,15 @@ describe('WS 网关（03-§7.3 状态机 + §7.4 进度通道）', () => {
     });
 
     // 串口泵（stub → 前端）：uart.rx bytes
-    (s.children[0] as FakeQemu).conns[0]?.write(Buffer.from('LED ON\n'));
+    const uartPort = (s.children[0] as FakeQemu).ports[0] as number;
+    (s.children[0] as FakeQemu).connOn(uartPort)?.write(Buffer.from('LED ON\n'));
     const rx = await c.until((m) => m.type === 'uart.rx');
     const bytes = (rx.payload as { bytes: number[] }).bytes;
     expect(String.fromCharCode(...bytes)).toBe('LED ON\n');
 
     // 串口泵（前端 → stub）：input.uart
     const dataPromise = new Promise<string>((res) => {
-      const conn = (s.children[0] as FakeQemu).conns[0] as net.Socket;
+      const conn = (s.children[0] as FakeQemu).connOn(uartPort) as net.Socket;
       conn.once('data', (d: Buffer) => res(d.toString('utf8')));
     });
     c.send({ type: 'input.uart', payload: { bytes: [104, 105] } }); // 'hi'
@@ -529,6 +563,140 @@ describe('WS 网关（03-§7.3 状态机 + §7.4 进度通道）', () => {
     const body = res.json() as { total: number; byState: Record<string, number> };
     expect(body.total).toBeGreaterThanOrEqual(1);
     expect(body.byState.running).toBeGreaterThanOrEqual(1);
+    c.close();
+  });
+});
+
+/** M5 GPIO 桥电路：板卡 + 按键（btn1:1.l → esp:GPIO4）+ 孤立 LED（未接 GPIO） */
+function makeGpioCircuit(): unknown {
+  return {
+    formatVersion: 1,
+    boardType: 'esp32-devkit-c-v4',
+    parts: [
+      { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 0, top: 0, rotate: 0, attrs: {} },
+      { id: 'btn1', type: 'wokwi-pushbutton', left: 300, top: 100, rotate: 0, attrs: {} },
+      { id: 'led1', type: 'wokwi-led', left: 300, top: 220, rotate: 0, attrs: {} },
+    ],
+    connections: [{ id: 'w1', source: 'btn1:1.l', target: 'esp:GPIO4', color: 'green', path: [] }],
+    serialMonitor: { baudrate: 115200 },
+  };
+}
+
+/** 提取帧有效载荷 [type, pin, value]（5 字节定长） */
+function framePayloads(buf: Buffer): Array<[number, number, number]> {
+  const out: Array<[number, number, number]> = [];
+  for (let i = 0; i + 4 < buf.length; i += 5) {
+    out.push([buf[i + 1] as number, buf[i + 2] as number, buf[i + 3] as number]);
+  }
+  return out;
+}
+
+function bridgeFrame(type: number, pin: number, value: number): Buffer {
+  return Buffer.from([0xa5, type, pin, value, (0xa5 ^ type ^ pin ^ value) & 0xff]);
+}
+
+describe('WS 网关 GPIO 桥（M5，03-§7.2）', () => {
+  /** attach 成功并等待 running + GPIO 桥连接，返回 ws 客户端与桥 socket */
+  async function attachWithBridge(
+    s: Setup,
+    sid: string,
+  ): Promise<{ c: WsClient; gpio: net.Socket }> {
+    const buildId = await submitBuild(s);
+    await awaitBuildStatus(s, buildId, 'success');
+    const c = new WsClient(wsUrl(s, sid));
+    await c.opened;
+    c.send({
+      type: 'attach',
+      payload: {
+        projectId: s.projectId,
+        circuit: makeGpioCircuit(),
+        firmwareId: buildId,
+        boardType: 'esp32-devkit-c-v4',
+      },
+    });
+    await c.until(
+      (m) => m.type === 'state' && (m.payload as { status: string }).status === 'running',
+    );
+    const child = s.children[0] as FakeQemu;
+    const gpio = await child.waitConn(child.ports[1] as number);
+    return { c, gpio };
+  }
+
+  it('input.pin：按键引脚沿连接映射 GPIO4 → 桥注入 GPIO_INPUT 帧', async () => {
+    const s = await setup({});
+    const { c, gpio } = await attachWithBridge(s, 'sid-m5-inject');
+
+    const got = new Promise<Buffer>((res) => gpio.once('data', (d: Buffer) => res(d)));
+    c.send({ type: 'input.pin', payload: { partId: 'btn1', pin: '1.l', level: 0 } });
+    const frame = await got;
+    // type=0x11 GPIO_INPUT, pin=4（GPIO4 映射）, value=0
+    expect(framePayloads(frame)).toEqual([[0x11, 4, 0]]);
+
+    c.send({ type: 'input.pin', payload: { partId: 'btn1', pin: '1.l', level: 1 } });
+    const frame2 = await new Promise<Buffer>((res) => gpio.once('data', (d: Buffer) => res(d)));
+    expect(framePayloads(frame2)).toEqual([[0x11, 4, 1]]);
+
+    c.close();
+  });
+
+  it('release：PIN_MODE 上报 pullup 后松开回退电平 1（05-§1.4）', async () => {
+    const s = await setup({});
+    const { c, gpio } = await attachWithBridge(s, 'sid-m5-release');
+
+    // 固件上报 INPUT_PULLUP（0x05）
+    gpio.write(bridgeFrame(0x02, 4, 0x05));
+    await new Promise((r) => setImmediate(r));
+
+    const frames: Buffer[] = [];
+    gpio.on('data', (d: Buffer) => frames.push(d));
+    c.send({ type: 'input.pin', payload: { partId: 'btn1', pin: '1.l', level: 0 } }); // 按下
+    await new Promise((r) => setTimeout(r, 20));
+    c.send({ type: 'input.pin', payload: { partId: 'btn1', pin: '1.l', level: 0, release: true } }); // 松开
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(framePayloads(Buffer.concat(frames))).toEqual([
+      [0x11, 4, 0], // 按下：注入 0
+      [0x11, 4, 1], // 松开：回退 pullup 电平 1
+    ]);
+    c.close();
+  });
+
+  it('固件 GPIO_WRITE 帧 → 客户端 gpio.write 事件（seq 单调递增）', async () => {
+    const s = await setup({});
+    const { c, gpio } = await attachWithBridge(s, 'sid-m5-out');
+
+    gpio.write(bridgeFrame(0x01, 4, 1));
+    const m1 = await c.until((m) => m.type === 'gpio.write');
+    expect(m1.payload).toMatchObject({ pin: 4, level: 1, seq: 1 });
+
+    gpio.write(bridgeFrame(0x01, 4, 0));
+    const m2 = await c.until((m) => m.type === 'gpio.write');
+    expect(m2.payload).toMatchObject({ pin: 4, level: 0, seq: 2 });
+    c.close();
+  });
+
+  it('未连接板卡 GPIO 的引脚 → error.ack NO_GPIO', async () => {
+    const s = await setup({});
+    const { c } = await attachWithBridge(s, 'sid-m5-nogpio');
+
+    c.send({ type: 'input.pin', payload: { partId: 'led1', pin: 'A', level: 1 } });
+    const err = await c.until((m) => m.type === 'error.ack');
+    expect((err.payload as { code: string }).code).toBe('NO_GPIO');
+    c.close();
+  });
+
+  it('桥 socket 异常断开 → input.pin 返回 NO_GPIO_BRIDGE，会话保持 running', async () => {
+    const s = await setup({});
+    const { c, gpio } = await attachWithBridge(s, 'sid-m5-drop');
+    gpio.destroy();
+    await new Promise((r) => setTimeout(r, 20));
+
+    c.send({ type: 'input.pin', payload: { partId: 'btn1', pin: '1.l', level: 0 } });
+    const err = await c.until((m) => m.type === 'error.ack');
+    expect((err.payload as { code: string }).code).toBe('NO_GPIO_BRIDGE');
+    // 会话未因桥断开失败（REST 状态仍 running）
+    const res = await s.app.inject({ method: 'GET', url: '/api/sessions/sid-m5-drop' });
+    expect((res.json() as { state: string }).state).toBe('running');
     c.close();
   });
 });

@@ -33,6 +33,8 @@ const SPEED_OPTIONS: Array<{ value: SimSpeed; label: string }> = [
 export default function TopBar() {
   const theme = useUiStore((s) => s.theme);
   const toggleTheme = useUiStore((s) => s.toggleTheme);
+  const muted = useUiStore((s) => s.muted);
+  const toggleMuted = useUiStore((s) => s.toggleMuted);
   const dirty = useCircuitStore((s) => s.dirty);
   const current = useProjectStore((s) => s.current);
   const saving = useProjectStore((s) => s.saving);
@@ -243,6 +245,41 @@ export default function TopBar() {
         <span className={`text-xs ${dirty ? 'text-warn' : 'text-text-secondary'}`}>
           {savedLabel}
         </span>
+
+        {/* 静音切换（05-§1.8 E4）：与主题切换并列，持久化到 uiStore.muted */}
+        <button
+          type="button"
+          onClick={toggleMuted}
+          title={muted ? '取消静音（蜂鸣器）' : '静音（蜂鸣器）'}
+          aria-label="toggle mute"
+          className="grid h-7 w-7 place-items-center rounded border border-panel-border text-text-secondary hover:text-text-primary"
+        >
+          {muted ? (
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M11 5 6 9H2v6h4l5 4V5z" />
+              <path d="m23 9-6 6M17 9l6 6" />
+            </svg>
+          ) : (
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M11 5 6 9H2v6h4l5 4V5z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
+            </svg>
+          )}
+        </button>
 
         {/* 主题切换：即时切换并持久化（04-§3） */}
         <button
