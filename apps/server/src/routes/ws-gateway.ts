@@ -45,6 +45,10 @@ interface GwSession {
   adj: Map<string, string[]> | null;
   /** 板卡 part 的 id（电路中 type = board-<boardType> 的 part） */
   boardPartId: string | null;
+  /** 固件 panic 扫描缓冲（串口文本尾部窗口，防关键词跨 chunk 切断） */
+  panicTail: string;
+  /** 本会话 panic 自动重启次数（上限 1 次；ctrl reset / 重新 attach 归零） */
+  panicRetries: number;
   unsubBuild: (() => void) | null;
   graceTimer: NodeJS.Timeout | null;
   lifeTimer: NodeJS.Timeout;
@@ -56,6 +60,9 @@ interface GwSession {
 }
 
 const CRITICAL_LINE = /\b(error|warning|fatal|失败)\b/i;
+
+/** 固件 panic 检出（与 golden/runner.ts PANIC_RE 同源：QEMU Espressif fork 双核缓存仿真 flake，06-§3） */
+const PANIC_RE = /Guru Meditation/i;
 
 export interface WsGatewayOptions {
   config: AppConfig;
@@ -133,6 +140,8 @@ export async function wsGatewayRoutes(
       pinPull: new Map(),
       adj: null,
       boardPartId: null,
+      panicTail: '',
+      panicRetries: 0,
       unsubBuild: null,
       graceTimer: null,
       lifeTimer: setTimeout(() => {
@@ -253,11 +262,15 @@ export async function wsGatewayRoutes(
     s.projectId = p.projectId;
     s.circuit = p.circuit;
     s.firmwareId = p.firmwareId;
-    s.boardType = p.boardType;
+    // boardType 规范化为短名（前端 session-client 直传 CircuitDoc.boardType 带 board-
+    // 前缀，golden runner 传短名；下游 BOARD_MACHINE/board_pinmaps/board-${bt} 匹配
+    // 均按短名语义，入口统一 strip，避免 boardPartId 双前缀匹配失败 → input.pin 全部
+    // NO_GPIO（M7 浏览器端实测发现，golden 因传短名未触发））
+    s.boardType = p.boardType.replace(/^board-/, '');
     // M5 GPIO 桥：邻接表 + 板卡 part 识别（input.pin 映射板卡 GPIO 用）
     s.adj = buildAdjacency(p.circuit);
     s.boardPartId =
-      p.circuit.parts.find((part) => part.type === `board-${p.boardType}`)?.id ?? null;
+      p.circuit.parts.find((part) => part.type === `board-${s.boardType}`)?.id ?? null;
     s.pinPull = new Map();
     setState(s, 'attaching');
     resolveBuild(s);
@@ -395,8 +408,10 @@ export async function wsGatewayRoutes(
       s.qemuSessionId = sessionId;
       const serial = await qemu.connectSerial(sessionId);
       s.serialSocket = serial;
+      s.panicTail = '';
       serial.on('data', (chunk: Buffer) => {
         send(s, { type: 'uart.rx', payload: { bytes: [...chunk] } });
+        scanFirmwarePanic(s, chunk);
       });
       serial.on('close', () => {
         if (s.serialSocket === serial) s.serialSocket = null;
@@ -412,6 +427,38 @@ export async function wsGatewayRoutes(
     } catch (err) {
       setState(s, 'error', err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * 固件 panic 扫描（06-§3 QEMU flake 缓解的浏览器会话口径，与 golden runner 同策略）：
+   * QEMU Espressif fork 双核缓存仿真存在 flake——固件启动后偶发 "Guru Meditation:
+   * Cache error" panic。检出即换新 QEMU 会话自动重启一次（用户仅收到 log 提示），
+   * 连续第二次 panic 判会话 error。ctrl reset / 重新 attach 重置计数。
+   */
+  function scanFirmwarePanic(s: GwSession, chunk: Buffer): void {
+    if (s.state === 'closed' || s.state === 'error') return;
+    // latin1：字节级保真（boot 日志为 ASCII，不做 UTF-8 多字节合并）
+    s.panicTail = (s.panicTail + chunk.toString('latin1')).slice(-64);
+    if (!PANIC_RE.test(s.panicTail)) return;
+    // 命中即停扫（respawn 为异步，防止后续 chunk 重复触发）
+    s.panicTail = '';
+    detachSerial(s);
+    s.panicRetries += 1;
+    if (s.panicRetries > 1) {
+      const msg =
+        '固件 panic 连续复现（QEMU 双核缓存仿真偶发 flake），已停止自动重启，请点击 ⟳ 重试';
+      setState(s, 'error', msg);
+      sendErr(s, 'FIRMWARE_PANIC', msg);
+      return;
+    }
+    send(s, {
+      type: 'log',
+      payload: {
+        level: 'warn',
+        text: '检测到固件 panic（QEMU 双核缓存仿真偶发 flake），自动重启仿真会话…',
+      },
+    });
+    void spawnQemuFor(s);
   }
 
   /** GPIO 桥接线（M5）：桥断开不致会话失败（串口监视仍可用），仅告警 */
@@ -481,6 +528,7 @@ export async function wsGatewayRoutes(
           sendErr(s, 'INVALID_STATE', `reset 仅在运行/错误状态有效（当前 ${s.state}）`);
           return;
         }
+        s.panicRetries = 0; // 用户主动重试：重置 panic 自动重启计数
         setState(s, 'attaching');
         void spawnQemuFor(s).then(() => {
           if (s.state === 'attaching') setState(s, 'running');

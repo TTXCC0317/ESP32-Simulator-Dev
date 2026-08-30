@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'no
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config/schema';
+import { appRoot } from '../utils/app-root';
 
 /**
  * QemuManager（03-§7.2）：QEMU 会话生命周期
@@ -116,7 +117,9 @@ export class QemuManager {
         `并发会话已达上限（${this.config.ws.maxConcurrentSessions}），请先停止其他仿真会话`,
       );
     }
-    const target = BOARD_MACHINE[p.boardType];
+    // CircuitDoc.boardType 带 board- 前缀（01-§7.4.1 N4，前端 session.start 直传），
+    // projects.board_type 为短名——查表统一去前缀兼容两种 ID
+    const target = BOARD_MACHINE[p.boardType.replace(/^board-/, '')];
     if (!target) throw new Error(`未知的板卡类型：${p.boardType}`);
 
     const sessionId = `ses-${randomUUID().slice(0, 12)}`;
@@ -137,6 +140,8 @@ export class QemuManager {
         `QEMU 未配置（tools.qemu${target.qemu === 'xtensa' ? 'Xtensa' : 'Riscv32'} 为空），请安装后更新 config/app.json`,
       );
     }
+    // tools 相对路径锚定仓库根（.tools/ 随仓库分发；pnpm --filter 启动时 cwd=apps/server）
+    const qemuExe = resolve(appRoot(), qemuBin);
 
     // N17 参数表（M5：第二 serial = UART1 GPIO 桥通道；-S 不用：attach 即运行）
     const args = [
@@ -157,7 +162,7 @@ export class QemuManager {
       '-cpu',
       target.cpu,
     ];
-    const child = this.spawnFn(qemuBin, args);
+    const child = this.spawnFn(qemuExe, args);
 
     const session: Session = {
       info: {

@@ -1,5 +1,7 @@
 import { execa } from 'execa';
+import { resolve } from 'node:path';
 import type { AppConfig } from '../config/schema';
+import { appRoot } from '../utils/app-root';
 
 /**
  * 工具链探测（02-§1.3 自检响应结构）
@@ -103,11 +105,32 @@ export async function probeTools(
   cfg: AppConfig['tools'],
   runner: CommandRunner = execRunner,
 ): Promise<ToolsStatus> {
-  const qemuFile = cfg.qemuXtensa.trim() || cfg.qemuRiscv32.trim();
+  // config.tools.* 允许相对路径，锚定仓库根（.tools/ 随仓库分发，不在 apps/server 下；
+  // pnpm --filter 启动时 cwd=apps/server，按 cwd 解析会探测失败 → 引擎B入口误置灰）。
+  // 空串保留空串语义（下方 probeUnconfigured 判定依赖）。
+  const root = appRoot();
+  const res = (p: string): string => (p.trim() ? resolve(root, p) : p);
+  const tools = {
+    ...cfg,
+    arduinoCli: res(cfg.arduinoCli),
+    esptool: res(cfg.esptool),
+    qemuXtensa: res(cfg.qemuXtensa),
+    qemuRiscv32: res(cfg.qemuRiscv32),
+  };
+  const qemuFile = tools.qemuXtensa.trim() || tools.qemuRiscv32.trim();
+  // esptool v4.12（pyvenv 构建）不识别 --version（输出 usage），只接受 version 子命令；
+  // 先试 version、解析不到再兜底 --version（兼容其他发行版），全失败才判不可用
+  const esptoolProbe = async (): Promise<ToolProbe> => {
+    const v4 = await probeCommand(runner, tools.esptool, ['version'], 'esptool');
+    if (v4.ok) return v4;
+    const flag = await probeCommand(runner, tools.esptool, ['--version'], 'esptool');
+    if (flag.ok) return flag;
+    return v4.reason ? v4 : flag;
+  };
   const [git, arduinoCli, esptool, qemu] = await Promise.all([
     probeCommand(runner, 'git', ['--version'], 'git'),
-    probeArduinoCli(runner, cfg),
-    probeCommand(runner, cfg.esptool, ['--version'], 'esptool'),
+    probeArduinoCli(runner, tools),
+    esptoolProbe(),
     qemuFile
       ? probeCommand(runner, qemuFile, ['--version'], 'qemu')
       : Promise.resolve(probeUnconfigured('qemuXtensa')),

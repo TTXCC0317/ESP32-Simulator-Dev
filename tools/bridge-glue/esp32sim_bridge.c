@@ -61,6 +61,11 @@ extern void __detachInterrupt(uint8_t pin);
 /* 输入注入表：-1 无注入（读真实引脚），0/1 注入电平 */
 static volatile int8_t s_inject[SOC_GPIO_PIN_COUNT];
 
+/* 固件 pull 声明表（pinMode INPUT_PULLUP/DOWN 时记录）：QEMU 不模拟上/下拉，
+ * 悬空输入经 __digitalRead 恒读 0（幻象按下）——无注入时按 pull 声明返回电平。
+ * -1 无 pull 声明（OUTPUT/纯 INPUT），0/1 对应 pulldown/pullup 电平 */
+static volatile int8_t s_pull[SOC_GPIO_PIN_COUNT];
+
 /* attachInterrupt 记录：注入沿匹配时由 RX task 调用 */
 typedef struct {
   void (*fn)(void *);
@@ -96,8 +101,12 @@ static void br_init(void) {
   if (s_ready) return;
 
   /* s_inject 静态零初始化会把"未注入"当成"注入低电平"（幻象按下，M6 golden 实测：
-   * button-led 首轮 digitalRead 恒 0）——按注释语义初始化为 -1（读真实引脚） */
-  for (int i = 0; i < SOC_GPIO_PIN_COUNT; i++) s_inject[i] = -1;
+   * button-led 首轮 digitalRead 恒 0）——按注释语义初始化为 -1（读真实引脚）；
+   * s_pull 同理（0 会被当成 pulldown 声明） */
+  for (int i = 0; i < SOC_GPIO_PIN_COUNT; i++) {
+    s_inject[i] = -1;
+    s_pull[i] = -1;
+  }
 
   uart_config_t cfg = {
     .baud_rate = BR_BAUD,
@@ -168,9 +177,19 @@ static void br_rx_task(void *arg) {
 
 /* ---- HAL 强定义（覆盖 core 的 weak alias，统一进桥） ---- */
 
+/* Arduino mode 常量（esp32-hal-gpio.h 3.x）：INPUT=0x01 OUTPUT=0x03
+ * PULLUP=0x04 INPUT_PULLUP=0x05 PULLDOWN=0x08 INPUT_PULLDOWN=0x09 —— 按位测试 */
+#define GLUE_MODE_PULLUP_BIT   0x04u
+#define GLUE_MODE_PULLDOWN_BIT 0x08u
+
 void pinMode(uint8_t pin, uint8_t mode) {
   __pinMode(pin, mode);
   br_init();
+  if (pin < SOC_GPIO_PIN_COUNT) {
+    if (mode & GLUE_MODE_PULLUP_BIT) s_pull[pin] = 1;
+    else if (mode & GLUE_MODE_PULLDOWN_BIT) s_pull[pin] = 0;
+    else s_pull[pin] = -1;
+  }
   br_report(FR_PIN_MODE, pin, mode);
 }
 
@@ -183,6 +202,8 @@ void digitalWrite(uint8_t pin, uint8_t val) {
 int digitalRead(uint8_t pin) {
   br_init();
   if (pin < SOC_GPIO_PIN_COUNT && s_inject[pin] >= 0) return s_inject[pin];
+  /* QEMU 不模拟内部上/下拉：悬空输入按固件 pull 声明返回（幻象按下修复，M7 前实测） */
+  if (pin < SOC_GPIO_PIN_COUNT && s_pull[pin] >= 0) return s_pull[pin];
   return __digitalRead(pin);
 }
 

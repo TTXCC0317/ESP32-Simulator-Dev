@@ -57,6 +57,8 @@
 ## 常见坑
 
 - **esp32 core 3.x GPIO HAL 是 weak alias**：`digitalWrite`/`pinMode` 等是 `__digitalWrite` 等的 weak alias（`esp32-hal-gpio.c`），`-Wl,--wrap` 只重定向 undefined reference、对 weak alias 静默失效（`__wrap_*` 被 `--gc-sections` 丢弃，链接照样成功）——拦截 Arduino HAL 必须用 glue 强符号覆盖（见 `tools/bridge-glue/esp32sim_bridge.c`、03-§7.2.2）；
+- **QEMU 不模拟 GPIO 内部上/下拉**：悬空输入经 `__digitalRead` 恒读 0（上拉按键"幻象按下"）——glue 桥按固件 pinMode 声明维护 pull 表，无注入时按声明电平返回（见 03-§7.2.2）；
+- **QEMU 双核缓存仿真偶发 flake**：Espressif fork 偶发 "Guru Meditation Error: Cache error" panic——网关扫描串口日志自动 respawn 会话 1 次，连续复现转 error 提示手动重试（见 06-§3）；
 - **react-konva 不支持 HTML5 DnD**：拖拽用 pointer 事件模拟（见 04 §4 D1）；
 - **Monaco 在 Vite 下要配 worker**：用 `?worker` 后缀导入（见 04 §7.1 C3）；
 - **wasm 加载**：用 `vite-plugin-wasm` + `?url`，COOP/COEP 头启用 SharedArrayBuffer（见 03 §3.4）；

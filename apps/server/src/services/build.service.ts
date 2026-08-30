@@ -237,10 +237,11 @@ export class BuildService {
       const srcDir = this.writeSources(buildId, dir);
       const outDir = join(dir, 'build');
 
-      // config.tools.* 允许相对路径（锚定仓库根）；spawn 的 cwd 是构建目录，
-      // 相对路径必须在 spawn 前 resolve 为绝对路径（否则 child 找不到可执行文件）
-      const arduinoCli = resolve(process.cwd(), this.config.tools.arduinoCli);
-      const esptool = resolve(process.cwd(), this.config.tools.esptool);
+      // config.tools.* 允许相对路径（锚定仓库根 appRoot，.tools/ 不随 cwd 变化）；
+      // spawn 的 cwd 是构建目录，相对路径必须在 spawn 前 resolve 为绝对路径
+      // （否则 child 找不到可执行文件；pnpm --filter 启动时 cwd=apps/server）
+      const arduinoCli = resolve(appRoot(), this.config.tools.arduinoCli);
+      const esptool = resolve(appRoot(), this.config.tools.esptool);
 
       // 1) arduino-cli compile（超时由 runner 的 timeoutMs 强杀）
       //    GPIO 桥拦截走 glue 强符号覆盖（03-§7.2 M5），编译命令无需注入
