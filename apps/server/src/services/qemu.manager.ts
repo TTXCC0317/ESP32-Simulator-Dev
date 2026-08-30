@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import net from 'node:net';
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config/schema';
@@ -73,6 +73,27 @@ export class QemuManager {
     this.config = deps.config;
     this.spawnFn = deps.spawn ?? defaultSpawn;
     this.now = deps.now ?? Date.now;
+  }
+
+  /** 启动时残留清理（06-§4）：删除 flash 目录下 mtime 早于 cleanupOrphanedAfterHours 的会话目录 */
+  cleanupOrphanedDirs(): number {
+    const root = resolve(process.cwd(), this.config.flash.dir);
+    if (!existsSync(root)) return 0;
+    const cutoff = Date.now() - this.config.flash.cleanupOrphanedAfterHours * 3_600_000;
+    let removed = 0;
+    for (const name of readdirSync(root)) {
+      if (!name.startsWith('ses-')) continue; // 仅清理会话目录（防御误删）
+      const dir = join(root, name);
+      try {
+        const st = statSync(dir);
+        if (!st.isDirectory() || st.mtimeMs >= cutoff) continue;
+        rmSync(dir, { recursive: true, force: true });
+        removed += 1;
+      } catch {
+        // 单个目录失败不影响其余（下次启动重试）
+      }
+    }
+    return removed;
   }
 
   /** QEMU 进程退出通知（非 dispose 主动退出 → 网关转 state error） */

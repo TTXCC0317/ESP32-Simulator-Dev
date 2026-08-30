@@ -45,6 +45,7 @@ desktop.ini
 # 测试与覆盖率
 coverage/
 .playwright-report/
+playwright-report/
 test-results/
 
 # SSH 密钥（git push 专用，不入版本管理）

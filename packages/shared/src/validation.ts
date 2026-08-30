@@ -11,7 +11,19 @@ export const CIRCUIT_LIMITS = {
   maxParts: 120,
   maxConnections: 300,
   maxDiagramBytes: 2 * 1024 * 1024,
+  /** 元件名称（ID）/ 属性值长度上限（06-§3：64 / 256 字符，校验拒绝） */
+  partIdMaxChars: 64,
+  attrValueMaxChars: 256,
 } as const;
+
+/** 规模上限（06-§3）；maxParts/maxConnections 必填，其余字段缺省回落 CIRCUIT_LIMITS */
+export type CircuitLimits = {
+  maxParts: number;
+  maxConnections: number;
+  maxDiagramBytes?: number;
+  partIdMaxChars?: number;
+  attrValueMaxChars?: number;
+};
 
 /** 校验上下文：由调用方提供 catalog 视图（web 端为内置 catalog-data，server 端为 parts_catalog 表） */
 export interface ValidationContext {
@@ -19,7 +31,7 @@ export interface ValidationContext {
   partTypes: ReadonlySet<string>;
   /** 类型 → 引脚名集合；同名引脚（板卡左右列）只出现一次 */
   pinNames: (type: string) => ReadonlySet<string> | undefined;
-  limits?: { maxParts: number; maxConnections: number };
+  limits?: CircuitLimits;
 }
 
 function zodIssuesToMessage(error: ZodError): string {
@@ -49,7 +61,7 @@ export function validateCircuitDoc(raw: unknown, ctx: ValidationContext): Circui
     return { ok: false, errors };
   }
   const doc = parsed.data;
-  const limits = ctx.limits ?? CIRCUIT_LIMITS;
+  const limits = { ...CIRCUIT_LIMITS, ...ctx.limits };
 
   if (doc.parts.length > limits.maxParts) {
     errors.push({
@@ -77,6 +89,23 @@ export function validateCircuitDoc(raw: unknown, ctx: ValidationContext): Circui
         message: `未知元件类型: ${p.type}（${p.id}）`,
         path: `parts.${p.id}.type`,
       });
+    }
+    // 名称/属性长度（06-§3：64 / 256 字符）
+    if (p.id.length > limits.partIdMaxChars) {
+      errors.push({
+        code: 'OVER_LIMIT',
+        message: `元件 ID 长度 ${p.id.length} 超过 ${limits.partIdMaxChars} 字符上限: ${p.id}`,
+        path: `parts.${p.id}.id`,
+      });
+    }
+    for (const [key, value] of Object.entries(p.attrs)) {
+      if (typeof value === 'string' && value.length > limits.attrValueMaxChars) {
+        errors.push({
+          code: 'OVER_LIMIT',
+          message: `元件 ${p.id} 属性 ${key} 长度 ${value.length} 超过 ${limits.attrValueMaxChars} 字符上限`,
+          path: `parts.${p.id}.attrs.${key}`,
+        });
+      }
     }
   }
 

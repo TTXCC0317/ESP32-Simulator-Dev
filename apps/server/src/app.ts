@@ -117,6 +117,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   // 5.5) 引擎B 服务（M4）：编译队列 + QEMU 会话管理器（REST build 路由同步注册）
   const buildService = new BuildService({ db, config, run: opts.buildRunner });
   const qemuManager = new QemuManager({ config, spawn: opts.qemuSpawn });
+  // 启动时清理异常残留的 flash 会话目录（06-§4：>cleanupOrphanedAfterHours 扫描删除；fail-safe）
+  try {
+    const removed = qemuManager.cleanupOrphanedDirs();
+    if (removed > 0) fastify.log.info({ removed }, 'cleaned orphaned flash session dirs');
+  } catch {
+    // 清理失败不阻塞启动
+  }
   await fastify.register(buildRoutes, { db, config, builds: buildService });
 
   // 6) websocket 插件（M4 会话网关使用；M1 先完成链条注册与 payload 上限。

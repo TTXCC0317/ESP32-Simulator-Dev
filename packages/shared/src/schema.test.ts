@@ -91,9 +91,15 @@ describe('clientMsgSchema（03-§2.5）', () => {
       'input.analog',
       'input.uart',
       'ctrl',
+      'ping',
     ];
     const actual = clientMsgSchema.options.map((o) => o.shape.type.value);
     expect([...actual].sort()).toEqual([...expected].sort());
+  });
+
+  it('accepts heartbeat ping（06-§7.1.1）', () => {
+    expect(clientMsgSchema.safeParse({ type: 'ping', ts: 1_715_000_000_000 }).success).toBe(true);
+    expect(clientMsgSchema.safeParse({ type: 'ping', ts: -1 }).success).toBe(false);
   });
 });
 
@@ -113,9 +119,10 @@ describe('serverMsgSchema（03-§2.4）', () => {
       type: 'build.progress',
       payload: { buildId: 'b1', phase: 'compiling', progress: 0.4, logLines: ['line1'] },
     },
+    { type: 'pong', ts: 1_715_000_000_000 },
   ];
 
-  it('accepts all ten message types', () => {
+  it('accepts all message types', () => {
     for (const m of msgs) {
       expect(serverMsgSchema.safeParse(m).success, `should accept ${m.type}`).toBe(true);
     }
@@ -157,6 +164,7 @@ describe('serverMsgSchema（03-§2.4）', () => {
       'log',
       'error.ack',
       'build.progress',
+      'pong',
     ];
     const actual = serverMsgSchema.options.map((o) => o.shape.type.value);
     expect([...actual].sort()).toEqual([...expected].sort());

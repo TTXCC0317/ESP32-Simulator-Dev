@@ -51,12 +51,27 @@ export const ctrlSchema = z.object({
   payload: z.enum(['start', 'pause', 'reset', 'stop']),
 });
 
+// ---- WS 心跳（06-§7.1.1 N20，仅引擎B链路；不计入 msg/s 速率上限） ----
+// 前端 15s 发 ping；服务端立即回 pong（ts 取服务端时钟）并刷新失活判定。
+// 平铺消息（无 payload 包装），归属客户端/服务端消息联合（§2.4）。
+
+export const pingSchema = z.object({
+  type: z.literal('ping'),
+  ts: z.number().int().nonnegative(),
+});
+
+export const pongSchema = z.object({
+  type: z.literal('pong'),
+  ts: z.number().int().nonnegative(),
+});
+
 export const clientMsgSchema = z.discriminatedUnion('type', [
   attachSchema,
   inputPinSchema,
   inputAnalogSchema,
   inputUartSchema,
   ctrlSchema,
+  pingSchema,
 ]);
 
 export type ClientMsg = z.infer<typeof clientMsgSchema>;
@@ -166,19 +181,8 @@ export const serverMsgSchema = z.discriminatedUnion('type', [
   serverLogSchema,
   errorAckSchema,
   buildProgressSchema,
+  pongSchema,
 ]);
 
 export type ServerMsg = z.infer<typeof serverMsgSchema>;
 export type ServerMsgType = ServerMsg['type'];
-
-// ---- WS 心跳（06-§7.1.1 N20，仅引擎B链路；不计入 msg/s 速率上限） ----
-
-export const pingSchema = z.object({
-  type: z.literal('ping'),
-  ts: z.number().int().nonnegative(),
-});
-
-export const pongSchema = z.object({
-  type: z.literal('pong'),
-  ts: z.number().int().nonnegative(),
-});

@@ -28,6 +28,21 @@ export default defineConfig({
       },
     },
   },
+  // preview（生产构建预览，L4 E2E 用）：代理与 dev 一致（02-§3.5 首屏/帧率在 prod 构建
+  // 下测量；vite preview 不继承 server.proxy，需单独声明）
+  preview: {
+    port: 4173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3001',
+        changeOrigin: true,
+      },
+      '/ws': {
+        target: 'ws://127.0.0.1:3001',
+        ws: true,
+      },
+    },
+  },
   build: {
     // Monaco 接入后按 04-§7.1 C3 加 manualChunks 单独切 chunk
     // esnext：worker ES format 与动态 import wasm glue 需要

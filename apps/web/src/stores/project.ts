@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { CreateProjectInput, ExampleSummary, ProjectMeta } from '@esp32-sim/shared';
 import { ApiError, api } from '../api/client';
 import { useCircuitStore } from '../circuit/circuitStore';
+import { pushSnapshot } from '../circuit/snapshots';
 import { useUiStore } from './ui';
 
 /**
@@ -140,6 +141,8 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       });
       useCircuitStore.getState().markSaved();
       set({ current: meta, saving: false, savedAt: Date.now() });
+      // 画布自动快照（06-§7.2 F2）：保存成功后写入 IndexedDB 环形 5 槽（尽力而为）
+      void pushSnapshot(cur.id, doc);
       return true;
     } catch (err) {
       set({ saving: false, error: toMessage(err) });

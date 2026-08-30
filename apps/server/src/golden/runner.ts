@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AppConfig } from '../config/schema';
@@ -25,6 +25,19 @@ import type { GoldenResult, GoldenScript } from './golden-schema';
 /** 锚定本文件位置（apps/server/src/golden/），不依赖 cwd（vitest 根启动 / server 直启均可） */
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MPY_WASM_PATH = join(SERVER_DIR, '..', 'web', 'src', 'sim', 'mpy', 'micropython.wasm');
+
+const DBG = 'D:/Workspaces/ESP32Simulator/m6-golden-debug.log';
+
+/** 固件 panic 检出（QEMU Espressif fork 双核缓存仿真 flake，触发引擎B 换会话重试，见下） */
+const PANIC_RE = /Guru Meditation/i;
+/** 诊断专用：相位时间戳落盘（stdout 重定向时异步缓冲不可靠，同步写 fd） */
+function dbg(msg: string): void {
+  try {
+    writeSync(openSync(DBG, 'a'), `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    /* 诊断专用 */
+  }
+}
 
 /** 加载 examples/<id>/golden.json（02-§2 目录约定；examples 在仓库根） */
 export function loadGoldenScript(exampleId: string): GoldenScript {
@@ -80,6 +93,7 @@ export async function runGoldenEngineA(
   });
 
   // 1) 产物探测（mpyDir 可注入，测试断言"未入库"引导路径）
+  dbg(`A entry example=${script.exampleId}`);
   const mpyDir = opts.mpyDir ?? dirname(MPY_WASM_PATH);
   const gluePath = join(mpyDir, 'micropython.mjs');
   const wasmPath = join(mpyDir, 'micropython.wasm');
@@ -109,6 +123,7 @@ export async function runGoldenEngineA(
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
+  dbg('A source ok');
 
   // 3) 加载 wasm + 注册 machine 桥（machine.c EM_JS → globalThis.__mpyMachine）
   // stdout/stderr：glue linebuffer 已按行回调（无 \n）→ 直接入列；
@@ -167,12 +182,15 @@ export async function runGoldenEngineA(
   } catch (err) {
     return fail(`wasm 加载失败：${err instanceof Error ? err.message : String(err)}`);
   }
+  dbg('A wasm loaded');
 
   // 4) 执行 main.py：mp_js_do_exec（v1.26 入口）+ Asyncify 驱动 time.sleep
   //    （while True 挂起运行）；durationMs 窗口到点即返回采集（do_exec Promise 仍在
   //    后台，进程退出即终止）。
   //    input 序列按 atMs 调度（相对执行起点）：注入表 + irq 沿注入（M5 ×引擎A）。
   const timers: NodeJS.Timeout[] = [];
+  /** 各引脚最近一次按下电平（release 回退用：pull 未观测时取按下电平取反） */
+  const lastPressA = new Map<number, 0 | 1>();
   try {
     for (const ev of script.input ?? []) {
       timers.push(
@@ -180,9 +198,15 @@ export async function runGoldenEngineA(
           () => {
             if (ev.release) {
               injected.delete(ev.gpio);
-              injectHw?.(ev.gpio, pulls.get(ev.gpio) ?? 0);
+              // pull 未观测（wasm 启动竞态）时取按下电平取反：上拉对地按下 0→释放 1、
+              // 下拉接 VCC 按下 1→释放 0，与 pull 语义一致（M6 golden 慢启动实测修复）
+              injectHw?.(
+                ev.gpio,
+                pulls.get(ev.gpio) ?? ((1 - (lastPressA.get(ev.gpio) ?? 0)) as 0 | 1),
+              );
             } else {
               injected.set(ev.gpio, ev.level);
+              lastPressA.set(ev.gpio, ev.level);
               injectHw?.(ev.gpio, ev.level);
             }
           },
@@ -212,7 +236,9 @@ export async function runGoldenEngineA(
       // 防止 Asyncify 驱动的空转程序饿死后续引擎B的定时器（M5 golden 实测修复）
       new Promise((res) =>
         setTimeout(() => {
+          dbg('A window end → sched kb interrupt');
           mod._mp_sched_keyboard_interrupt?.();
+          dbg('A sched kb interrupt returned');
           res(null);
         }, script.durationMs),
       ),
@@ -222,6 +248,7 @@ export async function runGoldenEngineA(
   } finally {
     for (const t of timers) clearTimeout(t);
   }
+  dbg(`A exec settled lines=${lines.length} gpio=${JSON.stringify([...gpio.entries()])}`);
   if (uartBuf.trim()) lines.push(uartBuf.trim());
 
   // 5) 断言：serialCycle ≥2 轮 + gpio 计数（≥ 容差，02-§3.2）
@@ -284,6 +311,7 @@ export async function runGoldenEngineB(
   });
 
   // 1) seed + 从示例 manifest 实例化临时工程（01-§6.1）
+  dbg(`B entry example=${script.exampleId}`);
   seedExamples(db);
   let projectId: string;
   let boardType: string;
@@ -307,6 +335,7 @@ export async function runGoldenEngineB(
     return fail(`编译提交失败：${err instanceof Error ? err.message : String(err)}`);
   }
   const rec = await builds.waitForFinish(buildId);
+  dbg(`B build finished status=${rec.status}`);
   if (rec.status !== 'success' || !rec.artifact) {
     const tail = (rec.log ?? '').split('\n').slice(-3).join(' | ');
     return fail(`编译未成功（status=${rec.status}）：${tail}`);
@@ -333,12 +362,25 @@ export async function runGoldenEngineB(
       if (p !== null) pinPull.set(pin, p);
     });
   };
-  /** input 序列按 atMs 调度（相对窗口起点）：release 回退 PIN_MODE pull（05-§1.4） */
+  /** input 序列按 atMs 调度（相对窗口起点）：release 回退 PIN_MODE pull（05-§1.4）；
+   *  pull 未观测（QEMU 慢启动，PIN_MODE 上报晚于 release 调度）时取按下电平取反——
+   *  上拉对地按下 0→释放 1、下拉接 VCC 按下 1→释放 0，与 pull 语义一致（M6 实测修复） */
   const scheduleInputs = (ch: GoldenGpioChannel): void => {
+    const lastPress = new Map<number, 0 | 1>();
     for (const ev of script.input ?? []) {
       timers.push(
         setTimeout(
-          () => ch.injectInput(ev.gpio, ev.release ? (pinPull.get(ev.gpio) ?? 0) : ev.level),
+          () => {
+            if (ev.release) {
+              ch.injectInput(
+                ev.gpio,
+                pinPull.get(ev.gpio) ?? ((1 - (lastPress.get(ev.gpio) ?? 0)) as 0 | 1),
+              );
+            } else {
+              lastPress.set(ev.gpio, ev.level);
+              ch.injectInput(ev.gpio, ev.level);
+            }
+          },
           Math.min(ev.atMs, script.durationMs),
         ),
       );
@@ -348,66 +390,113 @@ export async function runGoldenEngineB(
     let channel: GoldenGpioChannel | null = opts.gpioChannel ?? null;
     if (!opts.serialCollector) {
       const qemu = new QemuManager({ config, spawn: opts.qemuSpawn });
-      const { sessionId } = await qemu.spawnSession({
-        firmwarePath: join(builds.buildDir(buildId), rec.artifact),
-        boardType,
-      });
-      const serial = await qemu.connectSerial(sessionId);
-      // GPIO 桥（第二 serial；M5）：QemuGpioBridge 适配为 GoldenGpioChannel
-      if (needGpio && !channel) {
-        const sock = await qemu.connectGpioSerial(sessionId);
-        const writeSubs = new Set<(pin: number, level: 0 | 1) => void>();
-        const modeSubs = new Set<(pin: number, mode: number) => void>();
-        const bridge = new QemuGpioBridge(sock, {
-          onGpioWrite: (pin, level) => {
-            for (const cb of writeSubs) cb(pin, level);
-          },
-          onPinMode: (pin, mode) => {
-            for (const cb of modeSubs) cb(pin, mode);
-          },
+      // 固件 panic 重试（M6 实测）：QEMU Espressif fork 双核缓存仿真存在 flake——
+      // 固件启动后首轮循环偶发 "Guru Meditation: Cache error"（双核 IDLE 上下文、
+      // EXCVADDR 0x0，与固件内容/输入帧时序无关，同二进制多次复现率 ~50%，
+      // addr2line 回溯均落在 esp_cpu_wait_for_intr）。检出即换新 QEMU 会话重试一次，
+      // 连续两次 panic 才判失败（06-§3 QEMU 行已记录该 flake 与缓解口径）。
+      const MAX_ATTEMPTS = 2;
+      let panicked = false;
+      let attempt = 0;
+      while (true) {
+        attempt += 1;
+        panicked = false;
+        lines.length = 0;
+        gpioCounts.clear();
+        pinPull.clear();
+        for (const t of timers) clearTimeout(t);
+        timers.length = 0;
+
+        const { sessionId } = await qemu.spawnSession({
+          firmwarePath: join(builds.buildDir(buildId), rec.artifact),
+          boardType,
         });
-        channel = {
-          onGpioWrite: (cb) => writeSubs.add(cb),
-          onPinMode: (cb) => modeSubs.add(cb),
-          injectInput: (pin, level) => bridge.injectInput(pin, level),
-        };
+        dbg(`B qemu spawned attempt=${attempt} session=${sessionId}`);
+        const serial = await qemu.connectSerial(sessionId);
+        // GPIO 桥（第二 serial；M5）：QemuGpioBridge 适配为 GoldenGpioChannel
+        if (needGpio && !channel) {
+          const sock = await qemu.connectGpioSerial(sessionId);
+          const writeSubs = new Set<(pin: number, level: 0 | 1) => void>();
+          const modeSubs = new Set<(pin: number, mode: number) => void>();
+          const bridge = new QemuGpioBridge(sock, {
+            onGpioWrite: (pin, level) => {
+              for (const cb of writeSubs) cb(pin, level);
+            },
+            onPinMode: (pin, mode) => {
+              for (const cb of modeSubs) cb(pin, mode);
+            },
+          });
+          channel = {
+            onGpioWrite: (cb) => writeSubs.add(cb),
+            onPinMode: (cb) => modeSubs.add(cb),
+            injectInput: (pin, level) => bridge.injectInput(pin, level),
+          };
+        }
+        if (channel && needGpio) subscribeChannel(channel);
+        // 注入就绪门控：等全部输入脚 PIN_MODE 帧观测到（glue pinMode → br_init → 上报，
+        // 即固件已跑 setup、桥 RX 稳态）再按 atMs 相对调度，保证注入帧在固件稳态到达、
+        // atMs 语义锚定固件就绪时刻（02-§3.2）；10s 未就绪（剧本无 pinMode）退化为
+        // 窗口起点调度。串口数据由 socket 缓冲，采集 handler 后挂不丢帧（paused→flowing）。
+        if (channel && (script.input?.length ?? 0) > 0) {
+          const pins = [...new Set((script.input ?? []).map((e) => e.gpio))];
+          const t0 = Date.now();
+          while (pins.some((p) => !pinPull.has(p)) && Date.now() - t0 < 10_000) {
+            await new Promise((r) => setTimeout(r, 25));
+          }
+        }
+        if (channel) scheduleInputs(channel);
+        // 采集窗口内监控 QEMU 退出/串口断开（提前结束 → 根因化报错，而非笼统断言失败）
+        const exitInfo = await new Promise<{
+          early: boolean;
+          detail: string;
+        }>((res) => {
+          const t0 = Date.now();
+          let buf = '';
+          let timer: NodeJS.Timeout | null = null;
+          const offExit = qemu.onExit((sid, code, signal) => {
+            if (sid !== sessionId) return;
+            finish(true, `QEMU 进程退出（${Date.now() - t0}ms，code=${code} signal=${signal}）`);
+          });
+          const finish = (early: boolean, detail: string): void => {
+            offExit();
+            if (timer) clearTimeout(timer);
+            res({ early, detail });
+          };
+          timer = setTimeout(() => finish(false, ''), script.durationMs);
+          serial.on('data', (chunk: Buffer) => {
+            buf += chunk.toString('utf8');
+            const parts = buf.split(/\r?\n/);
+            buf = parts.pop() ?? '';
+            for (const l of parts)
+              if (l.trim()) {
+                const line = l.trim();
+                lines.push(line);
+                if (PANIC_RE.test(line)) {
+                  panicked = true;
+                  finish(true, `固件 panic：${line}`);
+                }
+              }
+          });
+          serial.on('error', (err: Error) => {
+            finish(true, `串口连接错误（${Date.now() - t0}ms）：${err.message}`);
+          });
+          serial.on('close', () => {
+            finish(true, `串口连接关闭（${Date.now() - t0}ms）`);
+          });
+        });
+        const retriable = panicked && attempt < MAX_ATTEMPTS;
+        await qemu.dispose(sessionId, retriable ? 'golden retry（固件 panic）' : 'golden done');
+        dbg(`B qemu disposed attempt=${attempt} early=${exitInfo.early} detail=${exitInfo.detail}`);
+        if (panicked) {
+          if (retriable) continue;
+          return fail(
+            `固件 panic（重试 ${attempt - 1} 次后仍复现）：${exitInfo.detail}（已采集 ${lines.length} 行）`,
+          );
+        }
+        if (exitInfo.early)
+          return fail(`QEMU 运行中断：${exitInfo.detail}（已采集 ${lines.length} 行）`);
+        break;
       }
-      if (channel && needGpio) subscribeChannel(channel);
-      if (channel) scheduleInputs(channel);
-      // 采集窗口内监控 QEMU 退出/串口断开（提前结束 → 根因化报错，而非笼统断言失败）
-      const exitInfo = await new Promise<{
-        early: boolean;
-        detail: string;
-      }>((res) => {
-        const t0 = Date.now();
-        let buf = '';
-        let timer: NodeJS.Timeout | null = null;
-        const offExit = qemu.onExit((sid, code, signal) => {
-          if (sid !== sessionId) return;
-          finish(true, `QEMU 进程退出（${Date.now() - t0}ms，code=${code} signal=${signal}）`);
-        });
-        const finish = (early: boolean, detail: string): void => {
-          offExit();
-          if (timer) clearTimeout(timer);
-          res({ early, detail });
-        };
-        timer = setTimeout(() => finish(false, ''), script.durationMs);
-        serial.on('data', (chunk: Buffer) => {
-          buf += chunk.toString('utf8');
-          const parts = buf.split(/\r?\n/);
-          buf = parts.pop() ?? '';
-          for (const l of parts) if (l.trim()) lines.push(l.trim());
-        });
-        serial.on('error', (err: Error) => {
-          finish(true, `串口连接错误（${Date.now() - t0}ms）：${err.message}`);
-        });
-        serial.on('close', () => {
-          finish(true, `串口连接关闭（${Date.now() - t0}ms）`);
-        });
-      });
-      await qemu.dispose(sessionId, 'golden done');
-      if (exitInfo.early)
-        return fail(`QEMU 运行中断：${exitInfo.detail}（已采集 ${lines.length} 行）`);
     } else {
       if (channel && needGpio) subscribeChannel(channel);
       if (channel) scheduleInputs(channel);

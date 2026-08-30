@@ -1,6 +1,7 @@
 import { api } from '../api/client';
 import { unlockAudio } from '../audio/ctx';
 import { useCircuitStore } from '../circuit/circuitStore';
+import { useErrorsStore } from '../stores/errors';
 import { useProjectStore } from '../stores/project';
 import { simSession, useSimStore } from '../stores/sim';
 import { EngineWorkerClient } from './mpy/engine-client';
@@ -49,7 +50,15 @@ export async function runSession(): Promise<void> {
     client.start();
   } catch (err) {
     simSession.dispose();
-    useSimStore.getState().setStatus('error', toMessage(err));
+    const msg = toMessage(err);
+    useSimStore.getState().setStatus('error', msg);
+    // 兜底聚合（04-§9）：深路径错误已在各客户端入面板，此处覆盖前置校验/网络类失败
+    useErrorsStore.getState().push({
+      source: 'session',
+      severity: 'error',
+      title: '运行失败',
+      detail: msg,
+    });
   }
 }
 

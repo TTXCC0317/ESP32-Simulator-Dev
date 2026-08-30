@@ -1,14 +1,17 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useErrorsStore } from '../stores/errors';
 import { useUiStore } from '../stores/ui';
 import DiagramTab from './DiagramTab';
+import ProblemsTab from './ProblemsTab';
 import SerialMonitorTab from './SerialMonitorTab';
 
-const TABS = ['代码', 'diagram.json', '串口监视器', '逻辑分析仪'] as const;
+const TABS = ['代码', 'diagram.json', '串口监视器', '逻辑分析仪', '问题'] as const;
 type Tab = (typeof TABS)[number];
 
 /**
  * BottomPanel（04-§2/§7）：Tab 条 + 默认 260px，可拖 180–480px，可折叠。
- * M2 接入 diagram.json Tab；代码编辑器（Monaco）待排期（04-§7.1，M3 实际交付为工程管理）、串口 M4 已接、逻辑分析仪随 M11。
+ * M2 接入 diagram.json Tab；代码编辑器（Monaco）待排期（04-§7.1，M3 实际交付为工程管理）、
+ * 串口 M4 已接、逻辑分析仪随 M11、问题面板 M6 已接（04-§9：error 级红点角标 + 自动弹出）。
  */
 export default function BottomPanel() {
   const collapsed = useUiStore((s) => s.bottomCollapsed);
@@ -16,6 +19,24 @@ export default function BottomPanel() {
   const height = useUiStore((s) => s.bottomHeight);
   const setHeight = useUiStore((s) => s.setBottomHeight);
   const [active, setActive] = useState<Tab>('diagram.json');
+  const unread = useErrorsStore((s) => s.unread);
+  const markRead = useErrorsStore((s) => s.markRead);
+  const lastErrorId = useErrorsStore((s) => s.lastErrorId);
+  const lastAutoRef = useRef(0);
+
+  // 04-§9 自动弹出：error 级问题到达时切到"问题"Tab 并展开面板
+  useEffect(() => {
+    if (lastErrorId > 0 && lastErrorId !== lastAutoRef.current) {
+      lastAutoRef.current = lastErrorId;
+      setActive('问题');
+      if (collapsed) toggleBottom();
+    }
+  }, [lastErrorId, collapsed, toggleBottom]);
+
+  // 切到"问题"Tab 即清未读（红点消失）
+  useEffect(() => {
+    if (active === '问题') markRead();
+  }, [active, markRead]);
 
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
@@ -70,6 +91,13 @@ export default function BottomPanel() {
             }
           >
             {t}
+            {t === '问题' && unread > 0 && (
+              <span
+                data-testid="problems-badge"
+                aria-label={`${unread} 条未读问题`}
+                className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-danger align-top"
+              />
+            )}
           </button>
         ))}
         <button
@@ -83,7 +111,9 @@ export default function BottomPanel() {
         </button>
       </div>
 
-      {active === 'diagram.json' ? (
+      {active === '问题' ? (
+        <ProblemsTab />
+      ) : active === 'diagram.json' ? (
         <DiagramTab />
       ) : active === '串口监视器' ? (
         <SerialMonitorTab />

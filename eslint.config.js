@@ -11,8 +11,8 @@ export default [
   // ---- 全局忽略 ----
   {
     ignores: [
-      'dist/**',
-      'build/**',
+      '**/dist/**', // 含根级与 apps/web/dist（preview/E2E 构建产物）
+      '**/build/**',
       'data/**',
       'logs/**',
       'config/**', // 运行期配置不入 lint
@@ -20,6 +20,7 @@ export default [
       '**/*.wasm',
       'coverage/**',
       '.playwright-report/**',
+      'playwright-report/**',
       'test-results/**',
     ],
   },
@@ -29,7 +30,7 @@ export default [
 
   // ---- TypeScript 文件（apps/ + packages/）----
   {
-    files: ['apps/**/*.ts', 'apps/**/*.tsx', 'packages/**/*.ts'],
+    files: ['apps/**/*.ts', 'apps/**/*.tsx', 'packages/**/*.ts', 'e2e/**/*.ts', '*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -57,7 +58,7 @@ export default [
   // ---- 测试文件放宽 ----
   // 测试代码中 `!` 是对已知返回值的断言辅助（配合 expect），放宽 strict 规则
   {
-    files: ['**/*.test.ts', '**/*.test.tsx'],
+    files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
     },

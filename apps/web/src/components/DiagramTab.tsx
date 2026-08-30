@@ -1,14 +1,23 @@
 import { useEffect, useState } from 'react';
 import { useCircuitStore } from '../circuit/circuitStore';
 import { applyDiagramText, buildDiagramText, WOKWI_BLINK_SAMPLE } from '../circuit/diagram';
+import { listSnapshots, type CanvasSnapshot } from '../circuit/snapshots';
+import { useProjectStore } from '../stores/project';
 
 /**
  * diagram.json Tab（02-M2、04-§7）：
  * - 打开/画布变更且未手动编辑时，以画布为准生成文本（画布 → JSON）；
  * - 「应用到画布」校验通过才替换（JSON → 画布）；非法 JSON 报错且不破坏画布；
+ * - JSON 损坏时展示最近 5 次自动快照（06-§7.2 F2，IndexedDB），点击恢复到画布；
  * - 「格式化」仅重排 JSON；「放弃修改」回滚到画布当前状态；「载入示例」注入 Wokwi blink。
  * 当前用 textarea，Monaco 换装待排期（04-§7.1/§7.2）。
  */
+
+function timeOf(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 
 export default function DiagramTab() {
   const doc = useCircuitStore((s) => s.doc);
@@ -16,11 +25,23 @@ export default function DiagramTab() {
   const [edited, setEdited] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
+  const [snapshots, setSnapshots] = useState<CanvasSnapshot[]>([]);
 
   // 画布变化且文本未被手动编辑 → 跟随画布
   useEffect(() => {
     if (!edited) setText(buildDiagramText(doc));
   }, [doc, edited]);
+
+  // JSON 损坏（校验失败）→ 加载最近快照供恢复（06-§7.2 F2）
+  useEffect(() => {
+    if (errors.length === 0) {
+      setSnapshots([]);
+      return;
+    }
+    const pid = useProjectStore.getState().current?.id;
+    if (!pid) return;
+    void listSnapshots(pid).then(setSnapshots);
+  }, [errors.length]);
 
   const apply = () => {
     const r = applyDiagramText(text);
@@ -57,6 +78,16 @@ export default function DiagramTab() {
     setEdited(true);
     setErrors([]);
     setNotice('已载入 Wokwi blink 示例，点击「应用到画布」生效');
+  };
+
+  /** 快照恢复（06-§7.2 F2）：覆盖画布 + 文本复位（用户随后 Ctrl+S 持久化） */
+  const restore = (snap: CanvasSnapshot) => {
+    useCircuitStore.getState().replaceDoc(snap.doc);
+    setText(buildDiagramText(snap.doc));
+    setEdited(false);
+    setErrors([]);
+    setSnapshots([]);
+    setNotice(`已恢复 ${timeOf(snap.ts)} 快照，请保存生效`);
   };
 
   return (
@@ -107,6 +138,22 @@ export default function DiagramTab() {
               {e}
             </p>
           ))}
+          {snapshots.length > 0 && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              <span className="text-xs text-text-secondary">恢复最近快照：</span>
+              {snapshots.map((s) => (
+                <button
+                  key={s.ts}
+                  type="button"
+                  onClick={() => restore(s)}
+                  className="rounded border border-panel-border px-1.5 py-0.5 text-xs text-text-primary hover:border-accent"
+                  title={`保存于 ${timeOf(s.ts)}（${s.parts} 个元件）`}
+                >
+                  {timeOf(s.ts)}（{s.parts} 元件）
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

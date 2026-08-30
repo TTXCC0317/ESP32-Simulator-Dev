@@ -8,6 +8,7 @@ import type {
   SimulationEngine,
 } from '@esp32-sim/shared';
 import type { WorkerMsg, WorkerReply } from '@esp32-sim/shared';
+import { useErrorsStore } from '../../stores/errors';
 import { useSimStore } from '../../stores/sim';
 
 /**
@@ -15,9 +16,13 @@ import { useSimStore } from '../../stores/sim';
  * SimulationEngine 接口 → Worker postMessage 转发；event.batch 经 rAF 二次合并
  * （worker 16ms batch + 主线程一帧 flush，避免每个 gpio.write 触发 Konva 重绘）。
  * 事件经 simSession 语义分发：由调用方 simSession.attach(this) 订阅。
+ * 错误面板（04-§9，M6）：state error / log error（stderr traceback、执行中断）→ errorsStore。
  */
 
 type Handler<K extends EngineEventType> = (payload: EngineEventMap[K]) => void;
+
+/** 引擎A 单会话 WASM 内存上限（06-§4 浏览器内存边界：256MB 超限提示并停止） */
+const MAX_WASM_MEM_BYTES = 256 * 1024 * 1024;
 
 export class EngineWorkerClient implements SimulationEngine {
   readonly kind = 'micropython-wasm' as const;
@@ -35,6 +40,12 @@ export class EngineWorkerClient implements SimulationEngine {
     this.worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e: MessageEvent<WorkerReply>) => this.onReply(e.data);
     this.worker.onerror = (e) => {
+      useErrorsStore.getState().push({
+        source: 'engine',
+        severity: 'error',
+        title: '引擎A Worker 错误',
+        detail: e.message,
+      });
       this.readyReject?.(new Error(`Worker 加载失败：${e.message}`));
       useSimStore.getState().setStatus('error', `Worker 加载失败：${e.message}`);
     };
@@ -48,14 +59,42 @@ export class EngineWorkerClient implements SimulationEngine {
         break;
       case 'state':
         useSimStore.getState().setStatus(msg.payload.status, msg.payload.error);
+        if (msg.payload.status === 'error') {
+          useErrorsStore.getState().push({
+            source: 'engine',
+            severity: 'error',
+            title: '引擎A 错误',
+            ...(msg.payload.error ? { detail: msg.payload.error } : {}),
+          });
+        }
         break;
       case 'log':
+        // stderr traceback / 执行中断等错误行聚合到问题面板（04-§9）
+        if (msg.payload.level === 'error') {
+          useErrorsStore.getState().push({
+            source: 'engine',
+            severity: 'error',
+            title: '引擎A 运行错误',
+            detail: msg.payload.text,
+          });
+        }
         this.emit('log', msg.payload);
         break;
-      case 'ready':
+      case 'ready': {
         useSimStore.getState().setWasmMemBytes(msg.payload.wasmMemBytes);
+        if (msg.payload.wasmMemBytes > MAX_WASM_MEM_BYTES) {
+          const msg2 = `WASM 内存 ${Math.round(msg.payload.wasmMemBytes / 1024 / 1024)}MB 超过 256MB 上限，已停止`;
+          useErrorsStore.getState().push({
+            source: 'engine',
+            severity: 'error',
+            title: '引擎A 内存超限',
+            detail: msg2,
+          });
+          useSimStore.getState().setStatus('error', msg2);
+        }
         this.readyResolve?.(msg.payload.wasmMemBytes);
         break;
+      }
     }
   }
 

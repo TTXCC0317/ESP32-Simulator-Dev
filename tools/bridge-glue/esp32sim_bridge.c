@@ -95,6 +95,10 @@ static void br_rx_task(void *arg);
 static void br_init(void) {
   if (s_ready) return;
 
+  /* s_inject 静态零初始化会把"未注入"当成"注入低电平"（幻象按下，M6 golden 实测：
+   * button-led 首轮 digitalRead 恒 0）——按注释语义初始化为 -1（读真实引脚） */
+  for (int i = 0; i < SOC_GPIO_PIN_COUNT; i++) s_inject[i] = -1;
+
   uart_config_t cfg = {
     .baud_rate = BR_BAUD,
     .data_bits = UART_DATA_8_BITS,

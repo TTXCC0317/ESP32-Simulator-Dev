@@ -17,7 +17,7 @@ import { notFound } from '../utils/http-error';
  * 状态机：attaching → building-wait → running ⇄ paused(M4 不支持) → error → closed
  * - attach：build success 直接 spawn QEMU；queued/running 订阅进度；无记录触发新编译；
  * - build.progress：普通行 100ms 窗口聚合 logLines；critical 行（error/warning）立即 logLine；
- * - 心跳（06-§7.1.1 N20）：ws ping frame + 应用层 ping 消息；45s 未 pong → terminate；
+ * - 心跳（06-§7.1.1 N20）：ws ping frame + 应用层 ping 消息（不计速率）；45s 未 pong → terminate；
  * - 断线保留 reconnectGraceMs（60s）供同 sid 重连，超时回收 QEMU；
  * - 速率：config.ws.msgRateLimitPerSec（超限 error.ack + 断开）；
  * - GPIO 桥（M5）：第二 serial ⇄ QemuGpioBridge；固件 gpio.write 帧 → ws 事件；
@@ -173,7 +173,6 @@ export async function wsGatewayRoutes(
 
   function bindSocket(s: GwSession, socket: WebSocket): void {
     socket.on('message', (raw: Buffer) => {
-      if (!checkRate(s)) return;
       let json: unknown;
       try {
         json = JSON.parse(raw.toString('utf8'));
@@ -186,7 +185,15 @@ export async function wsGatewayRoutes(
         sendErr(s, 'VALIDATION_FAILED', `消息校验失败：${parsed.error.issues[0]?.message ?? ''}`);
         return;
       }
-      void handleMessage(s, parsed.data as ClientMsg);
+      const msg = parsed.data as ClientMsg;
+      // 心跳不计入速率上限（06-§7.1.1）
+      if (msg.type === 'ping') {
+        s.alive = true;
+        send(s, { type: 'pong', ts: Date.now() });
+        return;
+      }
+      if (!checkRate(s)) return;
+      void handleMessage(s, msg);
     });
     socket.on('pong', () => {
       s.alive = true;
