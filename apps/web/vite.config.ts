@@ -29,7 +29,7 @@ export default defineConfig({
     },
   },
   build: {
-    // M3 接 Monaco 后按 04-§7.1 C3 加 manualChunks 单独切 chunk
+    // Monaco 接入后按 04-§7.1 C3 加 manualChunks 单独切 chunk
     // esnext：worker ES format 与动态 import wasm glue 需要
     target: 'esnext',
     sourcemap: true,

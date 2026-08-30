@@ -7,7 +7,7 @@ import { applyDiagramText, buildDiagramText, WOKWI_BLINK_SAMPLE } from '../circu
  * - 打开/画布变更且未手动编辑时，以画布为准生成文本（画布 → JSON）；
  * - 「应用到画布」校验通过才替换（JSON → 画布）；非法 JSON 报错且不破坏画布；
  * - 「格式化」仅重排 JSON；「放弃修改」回滚到画布当前状态；「载入示例」注入 Wokwi blink。
- * M2 用 textarea，M3 换 Monaco（04-§7.1）。
+ * 当前用 textarea，Monaco 换装待排期（04-§7.1/§7.2）。
  */
 
 export default function DiagramTab() {
