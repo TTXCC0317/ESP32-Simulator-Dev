@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import net, { type AddressInfo } from 'node:net';
 import WebSocket from 'ws';
@@ -17,7 +17,13 @@ import type { SpawnQemuFn } from '../services/qemu.manager';
 /**
  * L3（02-§4 M4 测试项）：WS 会话网关协议正反向 + 状态机转移（03-§7.3/§7.4）
  * 真实 listen + ws 客户端；编译 runner / QEMU spawn 用 stub（串口 TCP 由 stub 模拟）。
+ *
+ * CI 慢机加固（run #20 flake）：本文件真实 TCP + 大量异步重试时序（桥接
+ * connectGpioSerial 150ms×N 重试、reconnectGrace 400ms 等），双核 runner 并行
+ * 23 文件时单条消息等待可能超过默认 3s/5s——等待类超时放宽到 10s/30s，
+ * 断言逻辑不变（真失败仍会失败，只是不再被慢 CI 误杀）。
  */
+vi.setConfig({ testTimeout: 30_000 });
 
 const stubTools: ToolsStatus = {
   node: 'v22',
@@ -74,7 +80,7 @@ class WsClient {
     this.ws.terminate();
   }
 
-  next(timeoutMs = 3000): Promise<AnyMsg> {
+  next(timeoutMs = 10_000): Promise<AnyMsg> {
     const q = this.queue.shift();
     if (q) return Promise.resolve(q);
     return new Promise((res, rej) => {
@@ -86,7 +92,7 @@ class WsClient {
   }
 
   /** 依次取消息直到满足 pred（跳过无关消息） */
-  async until(pred: (m: AnyMsg) => boolean, timeoutMs = 3000): Promise<AnyMsg> {
+  async until(pred: (m: AnyMsg) => boolean, timeoutMs = 10_000): Promise<AnyMsg> {
     for (;;) {
       const m = await this.next(timeoutMs);
       if (pred(m)) return m;
@@ -152,7 +158,7 @@ class FakeQemu extends EventEmitter {
   }
 
   /** 等待指定端口有连接（网关异步 connect） */
-  async waitConn(listenPort: number, timeoutMs = 3000): Promise<net.Socket> {
+  async waitConn(listenPort: number, timeoutMs = 10_000): Promise<net.Socket> {
     const hit = this.connOn(listenPort);
     if (hit) return hit;
     return new Promise((res, rej) => {
