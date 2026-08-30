@@ -1,4 +1,4 @@
-import { openSync, readFileSync, writeSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AppConfig } from '../config/schema';
@@ -26,18 +26,8 @@ import type { GoldenResult, GoldenScript } from './golden-schema';
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MPY_WASM_PATH = join(SERVER_DIR, '..', 'web', 'src', 'sim', 'mpy', 'micropython.wasm');
 
-const DBG = 'D:/Workspaces/ESP32Simulator/m6-golden-debug.log';
-
 /** 固件 panic 检出（QEMU Espressif fork 双核缓存仿真 flake，触发引擎B 换会话重试，见下） */
 const PANIC_RE = /Guru Meditation/i;
-/** 诊断专用：相位时间戳落盘（stdout 重定向时异步缓冲不可靠，同步写 fd） */
-function dbg(msg: string): void {
-  try {
-    writeSync(openSync(DBG, 'a'), `${new Date().toISOString()} ${msg}\n`);
-  } catch {
-    /* 诊断专用 */
-  }
-}
 
 /** 加载 examples/<id>/golden.json（02-§2 目录约定；examples 在仓库根） */
 export function loadGoldenScript(exampleId: string): GoldenScript {
@@ -93,7 +83,6 @@ export async function runGoldenEngineA(
   });
 
   // 1) 产物探测（mpyDir 可注入，测试断言"未入库"引导路径）
-  dbg(`A entry example=${script.exampleId}`);
   const mpyDir = opts.mpyDir ?? dirname(MPY_WASM_PATH);
   const gluePath = join(mpyDir, 'micropython.mjs');
   const wasmPath = join(mpyDir, 'micropython.wasm');
@@ -123,7 +112,6 @@ export async function runGoldenEngineA(
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
-  dbg('A source ok');
 
   // 3) 加载 wasm + 注册 machine 桥（machine.c EM_JS → globalThis.__mpyMachine）
   // stdout/stderr：glue linebuffer 已按行回调（无 \n）→ 直接入列；
@@ -182,7 +170,6 @@ export async function runGoldenEngineA(
   } catch (err) {
     return fail(`wasm 加载失败：${err instanceof Error ? err.message : String(err)}`);
   }
-  dbg('A wasm loaded');
 
   // 4) 执行 main.py：mp_js_do_exec（v1.26 入口）+ Asyncify 驱动 time.sleep
   //    （while True 挂起运行）；durationMs 窗口到点即返回采集（do_exec Promise 仍在
@@ -236,9 +223,7 @@ export async function runGoldenEngineA(
       // 防止 Asyncify 驱动的空转程序饿死后续引擎B的定时器（M5 golden 实测修复）
       new Promise((res) =>
         setTimeout(() => {
-          dbg('A window end → sched kb interrupt');
           mod._mp_sched_keyboard_interrupt?.();
-          dbg('A sched kb interrupt returned');
           res(null);
         }, script.durationMs),
       ),
@@ -248,7 +233,6 @@ export async function runGoldenEngineA(
   } finally {
     for (const t of timers) clearTimeout(t);
   }
-  dbg(`A exec settled lines=${lines.length} gpio=${JSON.stringify([...gpio.entries()])}`);
   if (uartBuf.trim()) lines.push(uartBuf.trim());
 
   // 5) 断言：serialCycle ≥2 轮 + gpio 计数（≥ 容差，02-§3.2）
@@ -311,7 +295,6 @@ export async function runGoldenEngineB(
   });
 
   // 1) seed + 从示例 manifest 实例化临时工程（01-§6.1）
-  dbg(`B entry example=${script.exampleId}`);
   seedExamples(db);
   let projectId: string;
   let boardType: string;
@@ -335,7 +318,6 @@ export async function runGoldenEngineB(
     return fail(`编译提交失败：${err instanceof Error ? err.message : String(err)}`);
   }
   const rec = await builds.waitForFinish(buildId);
-  dbg(`B build finished status=${rec.status}`);
   if (rec.status !== 'success' || !rec.artifact) {
     const tail = (rec.log ?? '').split('\n').slice(-3).join(' | ');
     return fail(`编译未成功（status=${rec.status}）：${tail}`);
@@ -411,7 +393,6 @@ export async function runGoldenEngineB(
           firmwarePath: join(builds.buildDir(buildId), rec.artifact),
           boardType,
         });
-        dbg(`B qemu spawned attempt=${attempt} session=${sessionId}`);
         const serial = await qemu.connectSerial(sessionId);
         // GPIO 桥（第二 serial；M5）：QemuGpioBridge 适配为 GoldenGpioChannel
         if (needGpio && !channel) {
@@ -486,7 +467,6 @@ export async function runGoldenEngineB(
         });
         const retriable = panicked && attempt < MAX_ATTEMPTS;
         await qemu.dispose(sessionId, retriable ? 'golden retry（固件 panic）' : 'golden done');
-        dbg(`B qemu disposed attempt=${attempt} early=${exitInfo.early} detail=${exitInfo.detail}`);
         if (panicked) {
           if (retriable) continue;
           return fail(

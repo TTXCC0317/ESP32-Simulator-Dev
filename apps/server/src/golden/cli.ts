@@ -49,16 +49,6 @@ function parseArgs(): Args {
   };
 }
 
-const DBG = 'D:/Workspaces/ESP32Simulator/m6-golden-debug.log';
-/** 诊断专用：相位时间戳落盘（stdout 重定向时异步缓冲不可靠，同步写 fd） */
-function dbg(msg: string): void {
-  try {
-    writeSync(openSync(DBG, 'a'), `${new Date().toISOString()} ${msg}\n`);
-  } catch {
-    /* 诊断专用 */
-  }
-}
-
 /** 结果行：failed 只由用例失败置位（SKIP 不计），detail 行仅作展示 */
 interface ReportLine {
   line: string;
@@ -85,7 +75,6 @@ function lineOf(r: GoldenResult): ReportLine[] {
 
 async function main(): Promise<void> {
   const { example, engine, out } = parseArgs();
-  dbg(`cli start example=${example} engine=${engine}`);
   const script = loadGoldenScript(example);
   const lines: ReportLine[] = [];
 
@@ -101,17 +90,14 @@ async function main(): Promise<void> {
       const limit = ENGINEA_KNOWN_LIMITS[example];
       if (limit) {
         lines.push({ line: `[SKIP] ${example} × micropython-wasm：${limit}`, failed: false });
-        dbg(`engineA skipped: ${limit}`);
       } else {
         const r = await runGoldenEngineA(script, { db });
-        dbg(`engineA done ok=${r.ok}`);
         lines.push(...lineOf(r));
       }
     }
     if (engine === 'qemu-remote' || engine === 'both') {
       // 真实工具链路径来自 config/app.json（arduino-cli/esptool/QEMU；02-§3.2 L5）
       const r = await runGoldenEngineB(script, { db, config });
-      dbg(`engineB done ok=${r.ok}`);
       lines.push(...lineOf(r));
     }
   } finally {
