@@ -1,0 +1,11 @@
+# bridge-glue 下的 C 代码仅在 arduino-cli 编译链内编译（03-§7.2.2：glue 随 sketch
+# 注入构建沙箱，ESP-IDF/esp32 core 头文件 FreeRTOS.h、driver/uart.h 等只存在于
+# 工具链包内）。开发机不装 ESP-IDF（AGENTS 硬约束，同 Emscripten），宿主机 clangd
+# 无法解析这些 include → 报 "file not found" 及数十个级联错误，均为环境误报
+# （代码已在 M6 golden 引擎B 全流程验证编译运行通过，button-led PASS）。
+# 处理：对该路径禁用 clangd 全部诊断（同 tools/mpy-build/.clangd 对 machine-shim
+# 的先例；PathMatch 按相对本文件目录、正斜杠，(.*/) 前缀兼容任意锚定）。
+If:
+  PathMatch: (.*/)?bridge-glue/.*
+Diagnostics:
+  Suppress: ['*']
