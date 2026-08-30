@@ -10,7 +10,7 @@
 #   docker build --build-arg EMSDK_IMAGE=ghcr.io/ttxcc0317/emsdk:3.1.45 \
 #     -t mpy-wasm-build tools/mpy-build/
 
-ARG EMSDK_IMAGE=emscripten/emsdk:3.1.45
+ARG EMSDK_IMAGE=emscripten/emsdk:4.0.10
 FROM ${EMSDK_IMAGE}
 
 # MicroPython 源码（固定 tag 便于复现；网络受限环境可用

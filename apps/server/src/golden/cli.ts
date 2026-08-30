@@ -10,8 +10,7 @@ import type { GoldenEngine, GoldenResult } from './golden-schema';
 /**
  * Golden CLI（02-§3.2 L5 / e2e.yml golden job）：
  *   pnpm golden [--example blink] [--engine qemu-remote|micropython-wasm|both] [--out <file>]
- * 退出码：任一用例 fail → 1（CI 阻塞）；--out 将结果行同步落盘（CI artifact / 本地核查）；
- * 引擎A 已知缺陷用例输出 [SKIP] 行且不计失败（见 ENGINEA_KNOWN_LIMITS）。
+ * 退出码：任一用例 fail → 1（CI 阻塞）；--out 将结果行同步落盘（CI artifact / 本地核查）。
  */
 
 interface Args {
@@ -19,18 +18,6 @@ interface Args {
   engine: GoldenEngine | 'both';
   out?: string;
 }
-
-/**
- * 引擎A 已知缺陷用例（06-§3 S2 遗留，M6 最小探针实测）：当前入库 wasm 产物在高频
- * time.sleep / time.sleep_ms 轮询循环（10Hz 起冻结、2Hz 正常，阈值 2–10Hz 未细分）下
- * ~0.5s 内同步冻结——事件循环 + WASM 同时停摆、进程不退出；与 machine shim / print /
- * golden harness 无关。button-led 为 sleep_ms(20) 50Hz 轮询必触发——跳过其引擎A 用例
- * （引擎B 不受影响）。修复方向：emsdk 容器重建 wasm（升级 Asyncify 或 mp_hal_delay_ms
- * 改为单次 emscripten_sleep(remaining)），修复后删除本表即可恢复引擎A 用例。
- */
-const ENGINEA_KNOWN_LIMITS: Record<string, string> = {
-  'button-led': '引擎A wasm 高频 sleep 轮询循环同步冻结（06-§3 S2 遗留，M6 探针实测）',
-};
 
 function parseArgs(): Args {
   const argv = process.argv.slice(2);
@@ -87,13 +74,8 @@ async function main(): Promise<void> {
   runMigrations(db);
   try {
     if (engine === 'micropython-wasm' || engine === 'both') {
-      const limit = ENGINEA_KNOWN_LIMITS[example];
-      if (limit) {
-        lines.push({ line: `[SKIP] ${example} × micropython-wasm：${limit}`, failed: false });
-      } else {
-        const r = await runGoldenEngineA(script, { db });
-        lines.push(...lineOf(r));
-      }
+      const r = await runGoldenEngineA(script, { db });
+      lines.push(...lineOf(r));
     }
     if (engine === 'qemu-remote' || engine === 'both') {
       // 真实工具链路径来自 config/app.json（arduino-cli/esptool/QEMU；02-§3.2 L5）

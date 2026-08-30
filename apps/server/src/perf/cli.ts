@@ -16,9 +16,10 @@ import type { AppConfig } from '../config/schema';
  * 覆盖（无头可测三项）：
  * - serial     串口 115200 满速打印无丢行（N:<seq> 严格连续）；
  * - concurrent 4 并发会话稳定运行 --minutes 分钟，各会话流仅含自身标记（零互窜）+ 序号连续；
- * - enginea    引擎A GPIO 突发 8 边沿同步投递延迟 ≤50ms（wasm Node 直载；持续吞吐
- *              受 wasm 产物稳定性限制未测——详见套件注释，S2 遗留项。浏览器侧另有
- *              16ms 批量聚合——N22，仍在 50ms 预算内）。
+ * - enginea    引擎A GPIO 双指标（wasm Node 直载，02-§3.5）：突发 8 边沿同步投递
+ *              延迟 ≤50ms + 无 sleep 连续翻转吞吐 ≥1kHz 边沿/s（wasm 重建后 S2
+ *              整改项已补测；sleep_ms 轮询有 ~12-14ms/次 emscripten_sleep 往返
+ *              开销，见套件注释。浏览器侧另有 16ms 批量聚合——N22，仍在 50ms 预算内）。
  * 帧率（≥30fps）与生产构建首屏（≤3s）需真实浏览器，由 Playwright E2E（m6-5）覆盖。
  *
  * 退出码：任一项 fail → 1（CI 阻塞）；--out 同步落盘（Trae/CI stdout 截断防护）。
@@ -262,15 +263,10 @@ async function checkConcurrent(db: Db, config: AppConfig, minutes: number): Prom
           minutes * 60_000,
           // 只喂本会话自己的流：本串口出现他人标记（MarkerStream.foreign）即真互窜
           (l) => streams[i]?.feed(l),
-        ).then((finish) => {
-          dbg(`concurrent: session ${i + 1} ready`);
-          return finish;
-        }),
+        ),
       ),
     );
-    dbg('concurrent: all sessions ready, sampling window starts');
     const results = await Promise.all(finishes.map((f) => f()));
-    dbg('concurrent: sampling window done');
     const early = results.find((r) => r.early);
     if (early) return { name: 'concurrent', ok: false, detail: `运行中断：${early.detail}` };
     for (let i = 0; i < N; i++) {
@@ -295,21 +291,30 @@ async function checkConcurrent(db: Db, config: AppConfig, minutes: number): Prom
 }
 
 // ---------------------------------------------------------------------------
-// enginea：引擎A GPIO 事件同步投递延迟（有限突发 8 边沿，M5 golden 已验证区间）
+// enginea：引擎A GPIO 事件投递（突发延迟 + 持续吞吐，wasm Node 直载）
 //
-// 吞吐受限（perf 复核实测，S2 遗留项，wasm 产物缺陷）：
-// - time.sleep：Asyncify 挂起累计 ~16-20 次后进程静默死亡（0.05s×20 与 0.25s×16
-//   均触发；blink 2-4 次正常）——持续 sleep 循环（1kHz blink）在引擎A 不可用；
-// - 无 sleep 长循环：n≥10 次翻转单次 do_exec 即同步阻塞/硬死（实测 200000 次循环
-//   5 分钟仅产生 22 边沿 ≈14s/边沿，n=10/50/200/1000 全部卡死）；
-// - 同一实例第二次 async ccall 必崩；第三个 wasm 实例加载崩溃。
-// 故本套件测"突发延迟"：8 边沿（4 次翻转）同步投递，间隔即事件延迟代理。
-// 持续吞吐待 wasm 重建/上游修复后补测（02-§3.5 引擎A 行标注受限）。
+// wasm 重建（emsdk 4.0.10 + ASYNCIFY_STACK_SIZE=65536，S2 整改项）后旧产物三大
+// 缺陷已全部消除——探针实测（data/mpy-probe.mjs，不入库）：1000 次 sleep 挂起
+// 无冻结、单 exec 2000 次翻转 ~300ms、8 连续 async ccall 正常。本套件两项指标：
+// - burst    8 边沿（4 次翻转）同步投递，最大边沿间隔 ≤50ms（事件延迟代理）；
+// - sustain  无 sleep 连续翻转，吞吐 ≥1kHz 边沿/s（02-§3.5 引擎A 行"持续 1kHz"）。
+//   两次 exec 顺带回归"同一实例第二次 async ccall 必崩"旧缺陷。
+// 已知特性（非缺陷）：单次 emscripten_sleep 为完整事件循环往返（挂起→定时器→
+// 回卷），Node 无头实测 ~12-14ms/次——time.sleep_ms(1) 轮询实际 ~70Hz，节奏型
+// 程序按此标定；突发与无 sleep 翻转不受影响。
 const MPY_WASM_PATH = join(REPO_ROOT, 'apps', 'web', 'src', 'sim', 'mpy', 'micropython.wasm');
-const ENGINEA_MAIN_PY = `from machine import Pin
+const ENGINEA_BURST_PY = `from machine import Pin
 
 led = Pin(4, Pin.OUT)
 for i in range(4):
+    led.value(1)
+    led.value(0)
+print("DONE")
+`;
+const ENGINEA_SUSTAIN_PY = (n: number) => `from machine import Pin
+
+led = Pin(4, Pin.OUT)
+for i in range(${n}):
     led.value(1)
     led.value(0)
 print("DONE")
@@ -328,6 +333,32 @@ interface MpyApiModule {
   _mp_sched_keyboard_interrupt?: () => void;
   lengthBytesUTF8: (str: string) => number;
   stringToUTF8: (str: string, outPtr: number, maxBytes: number) => void;
+}
+
+/** 单次 mp_js_do_exec（async ccall）；timeoutMs 内未完成视为挂死，键入中断并抛错 */
+async function execMpy(mod: MpyApiModule, src: string, timeoutMs: number): Promise<void> {
+  const len = mod.lengthBytesUTF8(src);
+  const buf = mod._malloc(len + 1);
+  mod.stringToUTF8(src, buf, len + 1);
+  const value = mod._malloc(3 * 4);
+  const done = mod.ccall(
+    'mp_js_do_exec',
+    'number',
+    ['pointer', 'number', 'pointer'],
+    [buf, len, value],
+    { async: true },
+  ) as unknown as Promise<number>;
+  done.catch(() => {});
+  const ok = await Promise.race([
+    done.then(() => true),
+    new Promise<boolean>((res) =>
+      setTimeout(() => {
+        mod._mp_sched_keyboard_interrupt?.();
+        res(false);
+      }, timeoutMs),
+    ),
+  ]);
+  if (!ok) throw new Error(`脚本未在 ${timeoutMs}ms 内完成（wasm 挂死）`);
 }
 
 async function checkEngineA(seconds: number): Promise<CheckResult> {
@@ -356,17 +387,14 @@ async function checkEngineA(seconds: number): Promise<CheckResult> {
   };
   let mod: MpyApiModule;
   try {
-    dbg('enginea: import glue...');
     const glue = (await import(pathToFileURL(gluePath).href)) as {
       loadMicroPython: (opts?: Record<string, unknown>) => Promise<{ _module: MpyApiModule }>;
     };
-    dbg('enginea: glue imported');
     const mp = await glue.loadMicroPython({
       url: MPY_WASM_PATH,
-      stdout: (t: string) => dbg(`mp.out ${t}`),
-      stderr: (t: string) => dbg(`mp.err ${t}`),
+      stdout: () => {},
+      stderr: () => {},
     });
-    dbg('enginea: wasm loaded');
     mod = mp._module;
   } catch (err) {
     return {
@@ -375,48 +403,18 @@ async function checkEngineA(seconds: number): Promise<CheckResult> {
       detail: `wasm 加载失败：${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  // —— burst：8 边沿同步投递，最大间隔 ≤50ms ——
   try {
-    const len = mod.lengthBytesUTF8(ENGINEA_MAIN_PY);
-    const buf = mod._malloc(len + 1);
-    mod.stringToUTF8(ENGINEA_MAIN_PY, buf, len + 1);
-    const value = mod._malloc(3 * 4);
-    const t0 = Date.now();
-    const done = mod.ccall(
-      'mp_js_do_exec',
-      'number',
-      ['pointer', 'number', 'pointer'],
-      [buf, len, value],
-      { async: true },
-    ) as unknown as Promise<number>;
-    done.catch(() => {});
-    dbg('enginea: do_exec started');
-    // 突发脚本 <1s 完成；秒级窗口仅作进程挂死兜底（挂死即 fail）
-    const elapsed = await Promise.race([
-      done.then(() => Date.now() - t0),
-      new Promise<number>((res) =>
-        setTimeout(() => {
-          mod._mp_sched_keyboard_interrupt?.();
-          res(-1);
-        }, seconds * 1000),
-      ),
-    ]);
-    dbg(`enginea: do_exec settled elapsed=${elapsed} edges=${edges.length}`);
-    if (elapsed < 0) {
-      return {
-        name: 'enginea',
-        ok: false,
-        detail: `突发脚本未在 ${seconds}s 内完成（wasm 挂死缺陷），边沿 ${edges.length}/8`,
-      };
-    }
+    edges.length = 0;
+    await execMpy(mod, ENGINEA_BURST_PY, seconds * 1000);
   } catch (err) {
     return {
       name: 'enginea',
       ok: false,
-      detail: `执行失败：${err instanceof Error ? err.message : String(err)}`,
+      detail: `突发执行失败：${err instanceof Error ? err.message : String(err)}（边沿 ${edges.length}/8）`,
     };
   }
-  // 统计：边沿数与最大边沿间隔（同步投递延迟代理）
-  dbg(`enginea: window done, edges=${edges.length}`);
   let maxGap = 0;
   for (let i = 1; i < edges.length; i++) {
     const prev = edges[i - 1];
@@ -424,33 +422,53 @@ async function checkEngineA(seconds: number): Promise<CheckResult> {
     if (prev === undefined || cur === undefined) continue;
     maxGap = Math.max(maxGap, cur - prev);
   }
-  const ok = edges.length === 8 && maxGap <= 50;
+  if (edges.length !== 8 || maxGap > 50) {
+    return {
+      name: 'enginea',
+      ok: false,
+      detail: `GPIO 突发：实测 ${edges.length}/8 边沿，最大间隔 ${maxGap}ms（预算 ≤50ms）`,
+    };
+  }
+
+  // —— sustain：无 sleep 连续翻转吞吐 ≥1kHz 边沿/s ——
+  // N 按窗口定标：2N 边沿在阈值速率（1kHz）下耗时 seconds/2，为挂死兜底留一半余量
+  const n = Math.floor(seconds * 250);
+  try {
+    edges.length = 0;
+    await execMpy(mod, ENGINEA_SUSTAIN_PY(n), seconds * 1000);
+  } catch (err) {
+    return {
+      name: 'enginea',
+      ok: false,
+      detail: `持续吞吐执行失败：${err instanceof Error ? err.message : String(err)}（边沿 ${edges.length}/${2 * n}）`,
+    };
+  }
+  const first = edges[0];
+  const last = edges.at(-1);
+  if (edges.length !== 2 * n || first === undefined || last === undefined) {
+    return {
+      name: 'enginea',
+      ok: false,
+      detail: `GPIO 持续：实测 ${edges.length}/${2 * n} 边沿（丢事件）`,
+    };
+  }
+  const rate = Math.round(((edges.length - 1) * 1000) / (last - first));
   return {
     name: 'enginea',
-    ok,
+    ok: rate >= 1000,
     detail:
-      `GPIO 突发 8 边沿：实测 ${edges.length}，最大事件间隔 ${maxGap}ms（预算 ≤50ms；` +
-      `持续吞吐受 wasm 产物稳定性限制未测，见套件注释 S2 遗留项；浏览器侧另有 16ms 批量聚合 N22）`,
+      `GPIO 突发 8 边沿：最大间隔 ${maxGap}ms（≤50ms）；持续吞吐（无 sleep ${n} 次翻转 ` +
+      `${2 * n} 边沿）：${rate} 边沿/s（≥1kHz。sleep_ms 轮询有 ~12-14ms/次 ` +
+      `emscripten_sleep 往返开销，见套件注释。浏览器侧另有 16ms 批量聚合 N22）`,
   };
 }
 
 // ---------------------------------------------------------------------------
 
-const DBG = 'D:/Workspaces/ESP32Simulator/m6-perf-debug.log';
-function dbg(msg: string): void {
-  try {
-    writeSync(openSync(DBG, 'a'), `${new Date().toISOString()} ${msg}\n`);
-  } catch {
-    /* 诊断专用 */
-  }
-}
-
 async function main(): Promise<void> {
   const args = parseArgs();
-  dbg(`start args=${JSON.stringify(args)}`);
   try {
     process.chdir(REPO_ROOT); // 相对路径（config/data）锚定仓库根
-    dbg('chdir ok');
     const config = loadConfig(join(REPO_ROOT, 'config', 'app.json'));
     // perf 独立构建目录 + 关闭配额（conc30 实测踩坑）：本 CLI 用内存 DB，enforceQuota
     // 只能看见本运行的构建记录；共享 data/builds 的磁盘总量一旦超 quotaMb，扫描会按
@@ -464,23 +482,18 @@ async function main(): Promise<void> {
     // spawn+30min（flash.sessionTimeoutMs 默认，06-§4）整点 dispose → socket RST
     // （ECONNRESET 抢先于 exit 事件）→ 套件误报"运行中断"。perf 自管会话生命周期。
     config.flash.sessionTimeoutMs = 24 * 3_600_000;
-    dbg('config ok');
     const db = openDatabase({ path: ':memory:', wal: false });
     runMigrations(db);
-    dbg('db ok');
 
     const results: CheckResult[] = [];
     if (args.suite === 'enginea' || args.suite === 'all') {
       results.push(await checkEngineA(args.seconds));
-      dbg(`enginea done ok=${results.at(-1)?.ok}`);
     }
     if (args.suite === 'serial' || args.suite === 'all') {
       results.push(await checkSerial(db, config, args.seconds));
-      dbg(`serial done ok=${results.at(-1)?.ok}`);
     }
     if (args.suite === 'concurrent' || args.suite === 'all') {
       results.push(await checkConcurrent(db, config, args.minutes));
-      dbg(`concurrent done ok=${results.at(-1)?.ok}`);
     }
     db.close();
 
@@ -497,7 +510,6 @@ async function main(): Promise<void> {
     }
     // 同步写 fd：stdout 重定向时异步缓冲会被 process.exit 截断（golden CLI 同款）
     for (const { fd, line } of report) writeSync(fd, `${line}\n`);
-    dbg(`report fd written, out=${args.out ?? '<none>'}`);
     if (args.out) {
       const fd = openSync(resolve(process.cwd(), args.out), 'w');
       try {
@@ -505,11 +517,9 @@ async function main(): Promise<void> {
       } finally {
         closeSync(fd);
       }
-      dbg('out file written');
     }
     process.exit(failed > 0 ? 1 : 0);
-  } catch (err) {
-    dbg(`ERROR ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+  } catch {
     process.exit(2);
   }
 }

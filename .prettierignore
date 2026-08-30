@@ -31,5 +31,8 @@ documents/
 skills-install.log
 *.local.log
 
+# 工具链脚本（shell 无 prettier 解析器）
+tools/mpy-build/build.sh
+
 # pnpm-lock 已格式化，不重排
 pnpm-lock.yaml

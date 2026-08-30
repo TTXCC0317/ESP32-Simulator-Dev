@@ -71,8 +71,60 @@ PYEOF
   echo "=== mphalport sleep patch applied ==="
 fi
 
-# 探测 JS 侧需要的 C API 符号（03-§3.3：停止中断 / stdout / 执行入口），
-# 只导出真实存在的符号（emcc 对未知导出符号会链接失败）
+# emscripten 4.x 兼容：library.js 的 mp_js_hook 经 ccall 调 0 参导出函数
+# （mp_hal_get_interrupt_char / mp_sched_keyboard_interrupt）时用 ["null"] 占位，
+# 3.1.x 静默忽略多余实参，4.0.x 的 createExportWrapper 断言 abort（Asyncify
+# 挂起/恢复路径必经，表现为高频 sleep 循环中断）。修正为无参调用（上游 v1.26
+# 对 emscripten 4.0 的适配 bug）。
+if ! grep -q "ESP32Sim patch" "$PORT/library.js"; then
+  python3 - "$PORT/library.js" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+n = 0
+for old, new in [
+    ('''                "mp_hal_get_interrupt_char",
+                "number",
+                ["number"],
+                ["null"],
+            );''',
+     '''                "mp_hal_get_interrupt_char",
+                "number",
+                [], /* ESP32Sim patch: 0-arg export, emscripten 4.x arity assert */
+                [],
+            );'''),
+    ('''                            "mp_sched_keyboard_interrupt",
+                            "null",
+                            ["null"],
+                            ["null"],
+                        );''',
+     '''                            "mp_sched_keyboard_interrupt",
+                            "null",
+                            [], /* ESP32Sim patch: 0-arg export, emscripten 4.x arity assert */
+                            [],
+                        );'''),
+]:
+    if old in s:
+        s = s.replace(old, new, 1)
+        n += 1
+open(p, 'w').write(s)
+print(f'library.js arity patch applied ({n}/2)')
+PYEOF
+  echo "=== library.js arity patch applied ==="
+fi
+
+# 禁用 Node stdin 轮询 hook（standard variant 默认开启）：VM 每 10 条字节码经
+# ccall 同步进出 JS 再进 wasm，与 ASYNCIFY 挂起/恢复重放叠加会损坏 Asyncify
+# 状态机（稳定复现于第 8 次挂起恢复后 native crash）。引擎A 的 Ctrl-C 停止走
+# 导出的 mp_sched_keyboard_interrupt（engine.ts 直接调用），不依赖该 hook。
+if ! grep -q "ESP32Sim patch: disable JS hook" "$PORT/variants/standard/mpconfigvariant.h"; then
+  printf '\n/* ESP32Sim patch: disable JS hook (ASYNCIFY re-entry crash, see build.sh) */\n#undef MICROPY_VARIANT_ENABLE_JS_HOOK\n#define MICROPY_VARIANT_ENABLE_JS_HOOK (0)\n' >> "$PORT/variants/standard/mpconfigvariant.h"
+  echo "=== JS hook disabled ==="
+fi
+
+# 探测 JS 侧需要的 C API 符号（03-§3.3：停止中断 / stdout / 执行入口）。
+# 探测结果仅作诊断日志；实际导出走下方 port 的 *_EXTRA 扩展点（v1.26 Makefile
+# 已含 do_exec/register_js_module 等导出，我们仅需补充 gpio_inject 与 HEAPU8）。
 echo "=== probe exported API symbols ==="
 EXPORTS="_main"
 for fn in mp_js_init mp_js_do_str mp_js_init_repl mp_js_process_char mp_keyboard_interrupt mp_js_register_js_module mp_js_gpio_inject; do
@@ -82,9 +134,15 @@ for fn in mp_js_init mp_js_do_str mp_js_init_repl mp_js_process_char mp_keyboard
 done
 echo "EXPORTED_FUNCTIONS: $EXPORTS"
 
-# 追加链接参数：JS 文件系统（VFS 写入 main.py）+ ccall/FS 运行时方法 + API 导出
-if ! grep -q "ESP32SIM_LDFLAGS" Makefile; then
-  printf '\n# --- ESP32Sim linker additions (M4, 03-SS3.3/3.4) ---\nLDFLAGS += -sFORCE_FILESYSTEM -sEXPORTED_RUNTIME_METHODS=ccall,ccall_unsafe,FS,HEAPU8 -sEXPORTED_FUNCTIONS=%s\n' "$EXPORTS" >> Makefile
+# 追加链接参数：JS 文件系统（VFS 写入 main.py）+ API 导出。
+# 注意：链接命令为 emcc $(LDFLAGS) -o $@ $(OBJ) $(JSFLAGS)——JSFLAGS 位于命令行
+# 末尾，port 自带的 -s EXPORTED_RUNTIME_METHODS/EXPORTED_FUNCTIONS 会覆盖 LDFLAGS
+# 中同名参数（emscripten 4.0.7 起 HEAP* views 不再默认挂到 Module）。因此导出类
+# 参数必须走 port 的 *_EXTRA 扩展点；非导出类参数放 LDFLAGS/JSFLAGS 均可。
+# ASYNCIFY_STACK_SIZE：默认 4096B 对 MicroPython 编译期深 C 栈余量不足（挂起保存
+# 整段 wasm 栈），显式加大到 64KB；mp_hal_delay_ms 经 emscripten_sleep 挂起让出事件循环。
+if ! grep -q "ESP32SIM_LINKER_ADDITIONS" Makefile; then
+  printf '\n# --- ESP32Sim linker additions (M4, 03-SS3.3/3.4) ---\nEXPORTED_RUNTIME_METHODS_EXTRA += ,HEAPU8,HEAPU32\nEXPORTED_FUNCTIONS_EXTRA += ,_mp_js_gpio_inject\nJSFLAGS += -s FORCE_FILESYSTEM -s ASYNCIFY_STACK_SIZE=65536\n' >> Makefile
   echo "=== linker flags appended ==="
 fi
 
