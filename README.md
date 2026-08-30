@@ -68,20 +68,33 @@ open http://localhost:3001
 | 06   | [边界说明](./documents/06-边界说明.md)                 | 功能/精度/规模/资源/安全/错误边界、安全测试             |
 
 里程碑节奏：**P1（M0-M6）基础闭环 → P2（M7-M12）完整套件 → P3（M13-M15）进阶**。
-当前阶段：**M0 准备阶段**（脚手架/CI/规范）。
+当前进度：**P1 已完成并验收通过**（M0-M6 基础闭环，验收报告见 [documents/P1-验收报告.md](./documents/P1-验收报告.md)），下一阶段 P2 自 M7（PWM/ADC）起。
+
+## 当前能力（P1 已交付）
+
+- **电路画布**：元件拖放/选中/移动/旋转/删除、20px 网格吸附、缩放平移；引脚拖出正交连线（8 色循环、锚点编辑）；属性面板动态表单；diagram.json 画布⇄JSON 双向同步，兼容导入 Wokwi 简单工程；
+- **工程管理**：SQLite 持久化（WAL）、工程列表（新建/打开/复制/删除）、JSON 包导入导出、启动种子示例；路径穿越防护；
+- **P1 元件集**：ESP32 DevKit-C V4 板卡、LED、RGB LED、按键、电阻、电位器、滑动开关、有源蜂鸣器（完整规格见《05-元件清单》）；
+- **双引擎仿真**（同一电路同一剧本双引擎可跑）：
+  - 引擎A：MicroPython-WASM 浏览器内运行（`machine.Pin` 输入/输出、`Pin.irq`、`machine.UART(0)` shim）；
+  - 引擎B：arduino-cli 编译（队列/日志流/错误定位）→ esptool merge_bin → QEMU 运行，工具链缺失时入口置灰；
+- **串口终端**：xterm.js，波特率设置、ANSI 显示、输入发送、2MB 环形缓冲；
+- **GPIO 输入输出闭环**：LED/RGB/蜂鸣器随固件实时渲染，按键/开关点击注入双引擎（PinBus 网络聚合 + 上拉/下拉语义）；
+- **质量基建**：Golden 一致性测试（blink + button-led × 2 引擎全过）、性能复核 CLI（串口满速零丢行 / 4 并发 30 分钟 / 引擎A 突发延迟与持续吞吐）、Playwright E2E 骨架、GitHub Actions CI（lint/typecheck/test）。
 
 ## 仓库结构
 
 ```
 ESP32Simulator/
-├── documents/        # 设计文档
+├── documents/        # 设计文档（01-06 + P1-验收报告）
 ├── apps/
-│   ├── web/          # 前端 React 18 + Vite + TS
-│   └── server/      # 后端 Fastify + better-sqlite3
+│   ├── web/          # 前端 React 18 + Vite + TS（含 sim/mpy wasm 产物）
+│   └── server/      # 后端 Fastify + better-sqlite3（编译/QEMU/golden/perf）
 ├── packages/shared/ # 前后端共享类型与 zod schema
 ├── config/           # app.json + boards/ + parts/
-├── examples/         # 内置示例（含 golden.json 测试剧本）
-├── tools/            # setup-toolchain.ps1 / mpy-build/ / seed-test-db.ps1
+├── examples/         # 内置示例（blink / button-led，含 golden.json 测试剧本）
+├── tools/            # setup-toolchain.ps1 / mpy-build/（wasm 构建）/ bridge-glue/（引擎B GPIO 桥）/ seed-test-db.ps1
+├── .github/          # CI workflows（ci.yml / e2e.yml / relay-emsdk.yml）
 ├── AGENTS.md         # AI 编码 agent 工作规范
 ├── LICENSE           # MIT
 ├── NOTICE.md         # 第三方资源归属
@@ -108,11 +121,15 @@ pnpm build            # 构建生产产物
 pnpm lint             # ESLint 检查
 pnpm lint:fix         # ESLint 自动修复
 pnpm format           # Prettier 格式化
+pnpm format:check     # Prettier 校验（CI 同款）
 pnpm typecheck        # 全包 tsc --noEmit
 pnpm test             # vitest 单元/组件/集成测试
 pnpm e2e              # Playwright E2E（里程碑验收前）
-pnpm golden           # Golden 仿真一致性测试（M4 起）
+pnpm golden           # Golden 仿真一致性测试（--example <id> --engine both|qemu-remote|micropython-wasm）
+pnpm perf             # 性能复核（--suite serial|concurrent|enginea|all）
 ```
+
+> 示例：`pnpm golden --example button-led --engine both` 跑 button-led 双引擎一致性；`pnpm perf --suite enginea` 复核引擎A GPIO 突发延迟 + 持续吞吐。
 
 ## License
 
