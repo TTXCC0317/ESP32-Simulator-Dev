@@ -39,8 +39,12 @@ export const ADC_INPUT = 0x12;
 /** M8 TLV 帧类型 */
 export const I2C_TXN = 0x20;
 export const SPI_TXN = 0x21;
+/** M8 后续：DHT22 单总线请求（payload: pin 1 byte） */
+export const DHT22_TXN = 0x22;
 export const SENSOR_REPLY = 0x30;
 export const SPI_REPLY = 0x31;
+/** M8 后续：DHT22 回复（payload: pin | tempRaw_hi | tempRaw_lo | humRaw_hi | humRaw_lo） */
+export const DHT22_REPLY = 0x32;
 
 /** Arduino pinMode 模式位（esp32 core 3.x esp32-hal-gpio.h） */
 export const MODE_INPUT = 0x01;
@@ -86,6 +90,11 @@ export interface SpiTxnEvent {
   data: Uint8Array;
 }
 
+/** M8 后续：DHT22 单总线请求事件（DHT22_TXN 帧，payload: pin） */
+export interface DhtTxnEvent {
+  pin: number;
+}
+
 export interface GpioBridgeCallbacks {
   /** 固件写 GPIO（0x01） */
   onGpioWrite: (pin: number, level: 0 | 1) => void;
@@ -99,6 +108,8 @@ export interface GpioBridgeCallbacks {
   onI2cTxn?: (ev: I2cTxnEvent) => void;
   /** M8 固件 SPI 事务（0x21；可选，未注册则丢弃） */
   onSpiTxn?: (ev: SpiTxnEvent) => void;
+  /** M8 后续：固件 DHT22 请求（0x22；可选，未注册则丢弃） */
+  onDhtTxn?: (ev: DhtTxnEvent) => void;
 }
 
 /** 帧装配阶段 */
@@ -157,6 +168,22 @@ export class QemuGpioBridge {
     payload[0] = cs & 0xff;
     payload.set(data, 1);
     this.socket.write(encodeTlvFrame(SPI_REPLY, payload));
+  }
+
+  /**
+   * M8 后续：宿主→固件：DHT22 应答（DHT22_REPLY 帧）
+   * payload: pin(1) | tempRaw_hi(1) | tempRaw_lo(1) | humRaw_hi(1) | humRaw_lo(1)
+   * tempRaw/humRaw = Math.round(value * 10) —— DHT22 原始协议 ×10 整数格式
+   */
+  sendDhtReply(pin: number, tempRaw: number, humRaw: number): void {
+    if (this.socket.destroyed) return;
+    const payload = Buffer.alloc(5);
+    payload[0] = pin & 0xff;
+    payload[1] = (tempRaw >> 8) & 0xff;
+    payload[2] = tempRaw & 0xff;
+    payload[3] = (humRaw >> 8) & 0xff;
+    payload[4] = humRaw & 0xff;
+    this.socket.write(encodeTlvFrame(DHT22_REPLY, payload));
   }
 
   /** 获取当前 PWM 频率（默认 1000Hz） */
@@ -265,6 +292,11 @@ export class QemuGpioBridge {
       const len = payload[1] ?? 0;
       const data = Uint8Array.from(payload.slice(2, 2 + len));
       this.cb.onSpiTxn?.({ cs, data });
+    } else if (type === DHT22_TXN) {
+      // payload: pin (1 byte)
+      if (payload.length < 1) return;
+      const pin = payload[0] ?? 0;
+      this.cb.onDhtTxn?.({ pin });
     }
   }
 }

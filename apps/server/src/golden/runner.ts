@@ -8,7 +8,8 @@ import { createProject } from '../services/projects.service';
 import { BuildService, type BuildRunner } from '../services/build.service';
 import { pullOfMode, QemuGpioBridge } from '../services/gpio.bridge';
 import { QemuManager, type SpawnQemuFn } from '../services/qemu.manager';
-import type { GoldenResult, GoldenScript } from './golden-schema';
+import type { GoldenI2cTxn, GoldenResult, GoldenScript } from './golden-schema';
+import type { CircuitDoc, DhtDeviceSpec, I2cDeviceSpec } from '@esp32-sim/shared';
 
 /**
  * Golden 运行器 v2（02-§3.2/§4 M5：输入序列注入 ×2引擎 + GPIO 输出断言 ×2引擎）
@@ -270,6 +271,15 @@ export async function runGoldenEngineA(
     gpioDetail = `；gpio pin${pin}: ${parts.join(' ')}`;
   }
   const ok = serialOk && gpioOk;
+  /** M8：引擎A shim 未实现 I2C / sensor → expect.i2c/expect.sensor skip（Task 1 wasm shim 补后启用） */
+  let i2cSkipNote = '';
+  if (script.expect.i2c !== undefined) {
+    i2cSkipNote = `；[i2c skip: engine A shim not implemented]`;
+  }
+  let sensorSkipNote = '';
+  if (script.expect.sensor !== undefined) {
+    sensorSkipNote = `；[sensor skip: engine A shim not implemented]`;
+  }
   const serialErrors: string[] = [];
   if (!serialCycleOk && script.expect.serialCycle) {
     serialErrors.push(`串口输出未出现「${script.expect.serialCycle.join('→')}」完整 2 轮`);
@@ -286,7 +296,11 @@ export async function runGoldenEngineA(
     ok,
     serialLines: lines,
     gpio: gpioActual,
-    error: ok ? undefined : `${serialErrors.join('；')}${gpioDetail}`,
+    i2cTxns: [],
+    sensorActual: [],
+    error: ok
+      ? undefined
+      : `${serialErrors.join('；')}${gpioDetail}${i2cSkipNote}${sensorSkipNote}`,
   };
 }
 
@@ -339,6 +353,109 @@ export async function runGoldenEngineB(
     return fail(err instanceof Error ? err.message : String(err));
   }
 
+  // M8：从 project diagram 构造 I2C / DHT22 设备表（供 bridge onI2cTxn/onDhtTxn reply 用）
+  const i2cDevices = new Map<number, I2cDeviceSpec>();
+  const dhtDevices = new Map<number, { partId: string; temp: number; humidity: number }>();
+  {
+    const row = db.prepare('SELECT diagram FROM projects WHERE id = ?').get(projectId) as
+      { diagram: string } | undefined;
+    let circuit: CircuitDoc;
+    if (row) {
+      try {
+        circuit = JSON.parse(row.diagram) as CircuitDoc;
+      } catch {
+        circuit = {
+          formatVersion: 1,
+          boardType: 'board-esp32-devkit-c-v4',
+          parts: [],
+          connections: [],
+          serialMonitor: { baudrate: 115200 },
+        };
+      }
+    } else {
+      circuit = {
+        formatVersion: 1,
+        boardType: 'board-esp32-devkit-c-v4',
+        parts: [],
+        connections: [],
+        serialMonitor: { baudrate: 115200 },
+      };
+    }
+
+    // adjacency + resolveGpio（从 ws-gateway 同逻辑复制，runner 无路由依赖）
+    const boardPartId = circuit.parts.find((p) => p.type === `board-${boardType}`)?.id ?? null;
+    const gpioOfStmt = db.prepare(
+      'SELECT gpio_no FROM board_pinmaps WHERE board_type = ? AND pin_name = ?',
+    );
+    const gpioOf = (pName: string): number | null => {
+      const r = gpioOfStmt.get(boardType, pName) as { gpio_no: number } | undefined;
+      return r?.gpio_no ?? null;
+    };
+    const adj = new Map<string, string[]>();
+    for (const c of circuit.connections) {
+      // PinRef = `${partId}:${pin}` —— 已经是完整字符串
+      const s = c.source;
+      const t = c.target;
+      if (!adj.has(s)) adj.set(s, []);
+      if (!adj.has(t)) adj.set(t, []);
+      adj.get(s)?.push(t);
+      adj.get(t)?.push(s);
+    }
+    const resolveGpioLocal = (partId: string, pinName: string): number | null => {
+      if (!boardPartId) return null;
+      if (partId === boardPartId) return gpioOf(pinName);
+      const start = `${partId}:${pinName}`;
+      const seen = new Set([start]);
+      const queue = [start];
+      while (queue.length) {
+        const cur = queue.shift() as string;
+        for (const nxt of adj.get(cur) ?? []) {
+          if (seen.has(nxt)) continue;
+          seen.add(nxt);
+          const idx = nxt.indexOf(':');
+          if (nxt.slice(0, idx) === boardPartId) {
+            return gpioOf(nxt.slice(idx + 1));
+          }
+          queue.push(nxt);
+        }
+      }
+      return null;
+    };
+
+    const stmt = db.prepare('SELECT definition_json FROM parts_catalog WHERE type = ?');
+    for (const part of circuit.parts) {
+      const crow = stmt.get(part.type) as { definition_json: string } | undefined;
+      if (!crow) continue;
+      let def: { simulator?: { device?: unknown }; pins?: { name: string; role?: string }[] };
+      try {
+        def = JSON.parse(crow.definition_json) as typeof def;
+      } catch {
+        continue;
+      }
+      const dev = def.simulator?.device;
+      if (!dev) continue;
+      if ((dev as I2cDeviceSpec).kind === 'i2c-device') {
+        const d = dev as I2cDeviceSpec;
+        i2cDevices.set(d.address, d);
+      } else if ((dev as DhtDeviceSpec).kind === 'env-sensor') {
+        const d = dev as DhtDeviceSpec;
+        const signalPinName = def.pins?.find((p) => p.role === 'signal.io')?.name;
+        if (!signalPinName) continue;
+        const gpio = resolveGpioLocal(part.id, signalPinName);
+        if (gpio === null) continue;
+        const temp =
+          typeof part.attrs.temperature === 'number'
+            ? (part.attrs.temperature as number)
+            : (d.defaults?.temperature ?? 22);
+        const humidity =
+          typeof part.attrs.humidity === 'number'
+            ? (part.attrs.humidity as number)
+            : (d.defaults?.humidity ?? 50);
+        dhtDevices.set(gpio, { partId: part.id, temp, humidity });
+      }
+    }
+  }
+
   // 2) 编译（真 runner = execa；测试注入 stub）
   const builds = new BuildService({ db, config, run: opts.buildRunner });
   let buildId: string;
@@ -360,6 +477,10 @@ export async function runGoldenEngineB(
   const pwmCounts = new Map<number, number>();
   /** 固件 PIN_MODE 上报的 pull 电平（release 回退用，05-§1.4） */
   const pinPull = new Map<number, 0 | 1>();
+  /** M8：收集到的 I2C 事务序列（桥 I2C_TXN 帧 → expect.i2c 断言） */
+  const i2cTxns: GoldenI2cTxn[] = [];
+  /** M8 后续：收集到的 DHT22 读数（桥 DHT22_TXN 帧 → expect.sensor 断言） */
+  const sensorData: GoldenResult['sensorActual'] = [];
   const recordWrite = (pin: number, level: 0 | 1): void => {
     const c = gpioCounts.get(pin) ?? { highs: 0, lows: 0 };
     if (level) c.highs += 1;
@@ -422,6 +543,8 @@ export async function runGoldenEngineB(
         gpioCounts.clear();
         pwmCounts.clear();
         pinPull.clear();
+        i2cTxns.length = 0;
+        sensorData.length = 0;
         for (const t of timers) clearTimeout(t);
         timers.length = 0;
 
@@ -435,7 +558,9 @@ export async function runGoldenEngineB(
           const sock = await qemu.connectGpioSerial(sessionId);
           const writeSubs = new Set<(pin: number, level: 0 | 1) => void>();
           const modeSubs = new Set<(pin: number, mode: number) => void>();
-          const bridge = new QemuGpioBridge(sock, {
+          /** bridge 实例：onI2cTxn 回调需发送 SENSOR_REPLY，构造后赋值（definite assignment） */
+          let bridge!: QemuGpioBridge;
+          bridge = new QemuGpioBridge(sock, {
             onGpioWrite: (pin, level) => {
               for (const cb of writeSubs) cb(pin, level);
             },
@@ -445,6 +570,36 @@ export async function runGoldenEngineB(
             onPwmWrite: (pin, duty) => recordPwm(pin, duty),
             onPwmFreq: () => {
               /* PWM_FREQ 事件当前 golden 未断言，M7 暂不采集 */
+            },
+            /** M8：收集 I2C_TXN 帧序列供 expect.i2c 断言 + 发 SENSOR_REPLY reply 防固件卡死 */
+            onI2cTxn: (ev) => {
+              i2cTxns.push({
+                addr: ev.addr,
+                dir: ev.dir,
+                data: Array.from(ev.data),
+              });
+              // dir=r 时 compute reply → SENSOR_REPLY 帧；dir=w 不需要 reply
+              if (ev.dir === 'r') {
+                const device = i2cDevices.get(ev.addr);
+                const reply = computeI2cReply(device, ev.data);
+                bridge.sendI2cReply(ev.addr, reply);
+              }
+            },
+            /** M8 后续：DHT22 单总线请求 —— 查 dhtDevices 回复 DHT22_REPLY + 收集数据 */
+            onDhtTxn: (ev) => {
+              const device = dhtDevices.get(ev.pin);
+              if (device) {
+                sensorData.push({
+                  partId: device.partId,
+                  data: { temperature: device.temp, humidity: device.humidity },
+                  gpio: ev.pin,
+                });
+                const tempRaw = Math.round(device.temp * 10);
+                const humRaw = Math.round(device.humidity * 10);
+                bridge.sendDhtReply(ev.pin, tempRaw, humRaw);
+              } else {
+                bridge.sendDhtReply(ev.pin, 0, 0);
+              }
             },
           });
           channel = {
@@ -557,6 +712,21 @@ export async function runGoldenEngineB(
     gpioDetail = `；gpio pin${pin}: ${parts.join(' ')}`;
   }
   const ok = serialOk && gpioOk;
+  /** M8：I2C 事务前缀匹配断言（可选） */
+  let i2cOk = true;
+  let i2cDetail = '';
+  if (script.expect.i2c !== undefined) {
+    i2cOk = assertI2cPrefix(i2cTxns, script.expect.i2c);
+    i2cDetail = `；i2c collected=${i2cTxns.length} expect=${script.expect.i2c.length}`;
+  }
+  /** M8 后续：环境传感器读数断言（可选） */
+  let sensorOk = true;
+  let sensorDetail = '';
+  if (script.expect.sensor !== undefined) {
+    sensorOk = assertSensorData(sensorData, script.expect.sensor);
+    sensorDetail = `；sensor collected=${sensorData.length} expect=${script.expect.sensor.length}`;
+  }
+  const finalOk = ok && i2cOk && sensorOk;
   const serialErrors: string[] = [];
   if (!serialCycleOk && script.expect.serialCycle) {
     serialErrors.push(
@@ -569,13 +739,27 @@ export async function runGoldenEngineB(
     );
     serialErrors.push(`串口缺少子串：${missing.join(', ')}（已采集 ${lines.length} 行）`);
   }
+  if (!i2cOk && script.expect.i2c) {
+    serialErrors.push(
+      `I2C 事务前缀不匹配（收集 ${i2cTxns.length} 条，期望 ${script.expect.i2c.length} 条）`,
+    );
+  }
+  if (!sensorOk && script.expect.sensor) {
+    serialErrors.push(
+      `环境传感器读数不匹配（收集 ${sensorData.length} 条，期望 ${script.expect.sensor.length} 条）`,
+    );
+  }
   return {
     engine: 'qemu-remote',
     exampleId: script.exampleId,
-    ok,
+    ok: finalOk,
     serialLines: lines,
     gpio: gpioActual,
-    error: ok ? undefined : `${serialErrors.join('；')}${gpioDetail}`,
+    i2cTxns,
+    sensorActual: sensorData,
+    error: finalOk
+      ? undefined
+      : `${serialErrors.join('；')}${gpioDetail}${i2cDetail}${sensorDetail}`,
   };
 }
 
@@ -602,4 +786,74 @@ export function assertSerialCycle(lines: string[], cycle: string[], want: number
 export function assertSerialContainsAll(lines: string[], needles: string[]): boolean {
   if (needles.length === 0) return true;
   return needles.every((s) => lines.some((l) => l.includes(s)));
+}
+
+/**
+ * M8：I2C 事务序列前缀匹配
+ * expect 序列必须是 collected 序列的前缀（按序、逐字段相等）。
+ * - addr / dir 严格匹配
+ * - w 事务：expect.data 严格匹配 collected.data（字节序列相等）
+ * - r 事务：expect.data 可选（不填则只匹配 addr+dir）
+ *
+ * 前缀语义：durationMs 窗口收集到的事务可能还没跑完 expect 全部——只要 expect 前 N 个在收集序列里按序出现即可。
+ */
+export function assertI2cPrefix(
+  collected: GoldenI2cTxn[],
+  expect: NonNullable<GoldenScript['expect']['i2c']>,
+): boolean {
+  if (expect.length === 0) return true;
+  if (collected.length < expect.length) return false;
+  for (let i = 0; i < expect.length; i++) {
+    const e = expect[i];
+    const a = collected[i];
+    if (!e || !a) return false;
+    if (e.addr !== a.addr || e.dir !== a.dir) return false;
+    if (e.dir === 'w' && e.data) {
+      if (a.data.length !== e.data.length) return false;
+      for (let j = 0; j < e.data.length; j++) if (a.data[j] !== e.data[j]) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * M8 后续：环境传感器读数断言
+ * collected 是 sensor.data 事件数组（每次 DHT22 请求都产生一条）
+ * expect 是期望的传感器配置（partId + data key-value + tolerance）
+ * 匹配逻辑：按 partId 找到对应 collected 条目，data 里每个 key 的值在 tolerance 内。
+ * 前缀匹配：只要 collected 至少包含 expect 所有 partId 的读数即可（不要求次数/顺序）。
+ */
+export function assertSensorData(
+  collected: NonNullable<GoldenResult['sensorActual']>,
+  expect: NonNullable<GoldenScript['expect']['sensor']>,
+): boolean {
+  if (expect.length === 0) return true;
+  for (const e of expect) {
+    // 找 collected 中 partId 匹配的任意一条（取首次出现）
+    const match = collected.find((c) => c.partId === e.partId);
+    if (!match) return false;
+    const tolerance = e.tolerance ?? 0.5;
+    for (const [key, want] of Object.entries(e.data)) {
+      const got = match.data[key];
+      if (got === undefined) return false;
+      if (Math.abs(got - want) > tolerance) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * M8：I2C 回复计算（与 ws-gateway 同逻辑；runner bridge reply 用）
+ * device 按 wdata[0]（寄存器/命令字节）查 registers，返回 defaultBytes 或 0 填充。
+ */
+function computeI2cReply(device: I2cDeviceSpec | undefined, wdata: Uint8Array): Uint8Array {
+  if (!device) return new Uint8Array(0);
+  const regAddr = wdata[0];
+  const reg = regAddr === undefined ? undefined : device.registers.find((r) => r.addr === regAddr);
+  if (!reg) return new Uint8Array(0);
+  const size = Math.min(reg.size, 255);
+  if (reg.defaultBytes && reg.defaultBytes.length >= size) {
+    return new Uint8Array(reg.defaultBytes.slice(0, size));
+  }
+  return new Uint8Array(size);
 }

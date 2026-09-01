@@ -129,6 +129,24 @@ export const spiTxnSchema = z.object({
   }),
 });
 
+/**
+ * M8 后续：环境传感器读数推送（DHT22 等 env-sensor）
+ * 固件发起单总线请求 → 宿主回复值 → 宿主同时推送给前端（Inspector 数据展示）
+ */
+export const sensorDataSchema = z.object({
+  type: z.literal('sensor.data'),
+  payload: z.object({
+    /** circuit 中 env-sensor part 的 id */
+    partId: z.string().min(1),
+    /** 传感器读数动态值 —— { temperature: 22, humidity: 50 }（DHT22） */
+    data: z.record(z.number()),
+    /** 触发请求的固件 GPIO pin（诊断用） */
+    gpio: z.number().int(),
+    /** 单调序号 */
+    seq: z.number().int().nonnegative(),
+  }),
+});
+
 export const fbUpdateSchema = z.object({
   type: z.literal('fb.update'),
   payload: z.object({
@@ -177,6 +195,7 @@ export const serverMsgSchema = z.discriminatedUnion('type', [
   uartRxSchema,
   i2cTxnSchema,
   spiTxnSchema,
+  sensorDataSchema,
   fbUpdateSchema,
   serverLogSchema,
   errorAckSchema,

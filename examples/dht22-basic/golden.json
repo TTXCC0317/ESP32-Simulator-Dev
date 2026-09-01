@@ -3,6 +3,9 @@
   "durationMs": 4000,
   "input": [],
   "expect": {
-    "serialContainsAll": ["TEMP: 22.0", "HUM: 50.0"]
+    "serialContainsAll": ["TEMP: 22.0", "HUM: 50.0"],
+    "sensor": [
+      { "partId": "dh1", "data": { "temperature": 22.0, "humidity": 50.0 }, "tolerance": 0.5 }
+    ]
   }
 }

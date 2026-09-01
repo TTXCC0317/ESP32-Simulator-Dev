@@ -5099,6 +5099,13 @@ function js_uart_rx(port,buf,maxlen) { const bridge = globalThis.__mpyMachine; i
 function js_uart_rx_avail(port) { const bridge = globalThis.__mpyMachine; return bridge && bridge.uartAvailable ? bridge.uartAvailable(port) : 0; }
 function js_pwm_write(pin,duty,freq) { const bridge = globalThis.__mpyMachine; if (bridge && bridge.pwmWrite) bridge.pwmWrite(pin, duty, freq); }
 function js_adc_read(pin) { const bridge = globalThis.__mpyMachine; return bridge && bridge.adcRead ? bridge.adcRead(pin) : 0; }
+function js_i2c_scan(port,buf,maxlen) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.i2cScan || maxlen <= 0) return; const addrs = bridge.i2cScan(port); if (!addrs) return; const n = Math.min(addrs.length, maxlen); for (let i = 0; i < n; i++) HEAP32[buf/4 + i] = addrs[i]; }
+function js_i2c_writeto(port,addr,data,len) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.i2cWriteto || len <= 0) return 0; bridge.i2cWriteto(port, addr, HEAPU8.slice(data, data + len)); return len; }
+function js_i2c_readfrom(port,addr,buf,maxlen) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.i2cReadfrom || maxlen <= 0) return 0; const bytes = bridge.i2cReadfrom(port, addr, maxlen); if (!bytes || !bytes.length) return 0; const n = Math.min(bytes.length, maxlen); HEAPU8.set(bytes.subarray(0, n), buf); return n; }
+function js_i2c_wrrd(port,addr,wdata,wlen,rbuf,rlen) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.i2cWrrd || rlen <= 0) return 0; const w = wlen > 0 ? HEAPU8.slice(wdata, wdata + wlen) : new Uint8Array(0); const bytes = bridge.i2cWrrd(port, addr, w, rlen); if (!bytes || !bytes.length) return 0; const n = Math.min(bytes.length, rlen); HEAPU8.set(bytes.subarray(0, n), rbuf); return n; }
+function js_spi_write(port,data,len) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.spiWrite || len <= 0) return 0; bridge.spiWrite(port, HEAPU8.slice(data, data + len)); return len; }
+function js_spi_transfer(port,tx,rx,len) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.spiTransfer || len <= 0) return 0; const t = HEAPU8.slice(tx, tx + len); const r = bridge.spiTransfer(port, t); if (!r || !r.length) return 0; const n = Math.min(r.length, len); HEAPU8.set(r.subarray(0, n), rx); return n; }
+function js_dht22_read(pin,out_temp,out_hum) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.dht22Read) return 0; const r = bridge.dht22Read(pin); if (!r) return 0; HEAPF32[out_temp >> 2] = r.temperature; HEAPF32[out_hum >> 2] = r.humidity; return 1; }
 
 // Imports from the Wasm binary.
 var _mp_sched_keyboard_interrupt = Module['_mp_sched_keyboard_interrupt'] = makeInvalidEarlyAccess('_mp_sched_keyboard_interrupt');
@@ -5310,6 +5317,8 @@ var wasmImports = {
   /** @export */
   js_check_existing,
   /** @export */
+  js_dht22_read,
+  /** @export */
   js_get_error_info,
   /** @export */
   js_get_iter,
@@ -5322,11 +5331,23 @@ var wasmImports = {
   /** @export */
   js_gpio_write,
   /** @export */
+  js_i2c_readfrom,
+  /** @export */
+  js_i2c_scan,
+  /** @export */
+  js_i2c_writeto,
+  /** @export */
+  js_i2c_wrrd,
+  /** @export */
   js_iter_next,
   /** @export */
   js_pwm_write,
   /** @export */
   js_reflect_construct,
+  /** @export */
+  js_spi_transfer,
+  /** @export */
+  js_spi_write,
   /** @export */
   js_subscr_load,
   /** @export */

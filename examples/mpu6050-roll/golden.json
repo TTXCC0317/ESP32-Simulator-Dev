@@ -3,6 +3,12 @@
   "durationMs": 4000,
   "input": [],
   "expect": {
-    "serialContainsAll": ["WHO_AM_I: 0x68", "ACCEL"]
+    "serialContainsAll": ["WHO_AM_I: 0x68", "ACCEL"],
+    "i2c": [
+      { "addr": 104, "dir": "w", "data": [117] },
+      { "addr": 104, "dir": "r" },
+      { "addr": 104, "dir": "w", "data": [59] },
+      { "addr": 104, "dir": "r" }
+    ]
   }
 }

@@ -67,5 +67,9 @@ export function buildValidationContext(catalog: CatalogData): ValidationContext 
       const def = map.get(type);
       return def ? new Set(def.pins.map((p) => p.name)) : undefined;
     },
+    deviceSpec: (type: string) => {
+      const def = map.get(type);
+      return def?.simulator?.device ?? null;
+    },
   };
 }

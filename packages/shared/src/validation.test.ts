@@ -158,6 +158,81 @@ describe('validateCircuitDoc', () => {
     expect(codes).toContain('DUP_PART_ID');
     expect(codes).toContain('BAD_PINREF');
   });
+
+  // M8：I2C/SPI 总线冲突
+  describe('M8 总线地址冲突检测', () => {
+    const busCtx: ValidationContext = {
+      partTypes: new Set([
+        'board-esp32-devkit-c-v4',
+        'wokwi-led',
+        'wokwi-bh1750',
+        'wokwi-mpu6050',
+        'wokwi-w25q32',
+      ]),
+      pinNames: (type) => {
+        if (type === 'board-esp32-devkit-c-v4')
+          return new Set(['GPIO4', 'GND.1', '3V3', 'GPIO21', 'GPIO22']);
+        if (type === 'wokwi-led') return new Set(['A', 'C']);
+        if (type === 'wokwi-bh1750') return new Set(['VCC', 'GND', 'SDA', 'SCL']);
+        if (type === 'wokwi-mpu6050') return new Set(['VCC', 'GND', 'SDA', 'SCL', 'INT']);
+        if (type === 'wokwi-w25q32') return new Set(['VCC', 'GND', 'CS', 'SCK', 'MOSI', 'MISO']);
+        return undefined;
+      },
+      deviceSpec: (type) => {
+        if (type === 'wokwi-bh1750') return { kind: 'i2c-device', address: 0x23, registers: [] };
+        if (type === 'wokwi-mpu6050') return { kind: 'i2c-device', address: 0x68, registers: [] };
+        if (type === 'wokwi-w25q32') return { kind: 'spi-device', csGpio: 5 };
+        return null;
+      },
+    };
+
+    it('I2C_ADDR_CONFLICT：同地址两 BH1750 报冲突', () => {
+      const doc = baseDoc();
+      doc.connections = [];
+      doc.parts.push(
+        { id: 'bh1', type: 'wokwi-bh1750', left: 300, top: 200, rotate: 0, attrs: {} },
+        { id: 'bh2', type: 'wokwi-bh1750', left: 400, top: 200, rotate: 0, attrs: {} },
+      );
+      const v = validateCircuitDoc(doc, busCtx);
+      expect(v.ok).toBe(false);
+      const codes = v.errors.map((e) => e.code);
+      expect(codes).toContain('I2C_ADDR_CONFLICT');
+      const err = v.errors.find((e) => e.code === 'I2C_ADDR_CONFLICT');
+      expect(err?.message).toContain('0x23');
+    });
+
+    it('I2C_ADDR_CONFLICT：BH1750(0x23) + MPU6050(0x68) 不报冲突', () => {
+      const doc = baseDoc();
+      doc.connections = [];
+      doc.parts.push(
+        { id: 'bh', type: 'wokwi-bh1750', left: 300, top: 200, rotate: 0, attrs: {} },
+        { id: 'mp', type: 'wokwi-mpu6050', left: 400, top: 200, rotate: 0, attrs: {} },
+      );
+      const v = validateCircuitDoc(doc, busCtx);
+      const codes = v.errors.map((e) => e.code);
+      expect(codes).not.toContain('I2C_ADDR_CONFLICT');
+    });
+
+    it('SPI_CS_CONFLICT：两 W25Q32 报 CS 冲突', () => {
+      const doc = baseDoc();
+      doc.connections = [];
+      doc.parts.push(
+        { id: 'w1', type: 'wokwi-w25q32', left: 300, top: 200, rotate: 0, attrs: {} },
+        { id: 'w2', type: 'wokwi-w25q32', left: 400, top: 200, rotate: 0, attrs: {} },
+      );
+      const v = validateCircuitDoc(doc, busCtx);
+      expect(v.ok).toBe(false);
+      const codes = v.errors.map((e) => e.code);
+      expect(codes).toContain('SPI_CS_CONFLICT');
+    });
+
+    it('无 deviceSpec 的 ctx 跳过总线扫描（向后兼容）', () => {
+      const v = validateCircuitDoc(baseDoc(), ctx);
+      const codes = v.errors.map((e) => e.code);
+      expect(codes).not.toContain('I2C_ADDR_CONFLICT');
+      expect(codes).not.toContain('SPI_CS_CONFLICT');
+    });
+  });
 });
 
 describe('diagram serialize/parse 往返', () => {

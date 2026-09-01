@@ -255,3 +255,48 @@ void SPIClass::writePixels(const void *data, uint32_t size) {
 void SPIClass::writePattern(const uint8_t *data, uint8_t size, uint32_t repeat) {
   for (uint32_t i = 0; i < repeat; i++) writeBytes(data, size);
 }
+
+/* ---- M8 后续：DHT22 辅助 shim ----
+ *
+ * DHT22 不走 I2C/SPI 总线（role=signal.io），用 GPIO 单总线协议。
+ * 真实时序：MCU 拉低 20ms → 释放 20–40µs → DHT22 拉低 80µs → 释放 80µs →
+ *   40bit 数据（每 bit：拉低 50µs → 释放 26–28µs=0, 70µs=1）
+ *
+ * 本 shim 完全短路 GPIO 时序：直接调 br_dht22_txn(pin) 发 TLV 帧请求宿主，
+ * 宿主根据设备表配置（Inspector 滑杆注入默认 temperature=22, humidity=50）回复。
+ *
+ * sketch 用法（替代 Adafruit DHT / SimpleDHT）：
+ *   #include "esp32sim_bridge.h"
+ *   float t, h;
+ *   if (esp32sim_dht22_read(DHTPIN, &t, &h)) { ... }
+ *
+ * 也可以集成到 DHT 库（需按库的具体实现拦截对应的 read 方法）——
+ * 本文件暂只提供通用辅助入口。
+ */
+
+extern "C" int esp32sim_dht22_read(uint8_t pin, float *out_temp_c, float *out_hum_pct) {
+  uint16_t temp_raw = 0, hum_raw = 0;
+  if (!br_dht22_txn(pin, &temp_raw, &hum_raw)) {
+    return 0;
+  }
+  /* temp_raw: 16-bit, 最高位=符号（1=负温），低 15 位 = |temp| × 10
+   * hum_raw:  16-bit 无符号 = humidity × 10 */
+  if (out_temp_c != NULL) {
+    int16_t signed_raw = (int16_t)temp_raw;  /* 最高位扩展为符号 */
+    *out_temp_c = (float)signed_raw / 10.0f;
+  }
+  if (out_hum_pct != NULL) {
+    *out_hum_pct = (float)hum_raw / 10.0f;
+  }
+  return 1;
+}
+
+/* 简化版本：只返回温度（不关心湿度时用） */
+extern "C" int esp32sim_dht22_read_temp(uint8_t pin, float *out_temp_c) {
+  return esp32sim_dht22_read(pin, out_temp_c, NULL);
+}
+
+/* 简化版本：只返回湿度 */
+extern "C" int esp32sim_dht22_read_hum(uint8_t pin, float *out_hum_pct) {
+  return esp32sim_dht22_read(pin, NULL, out_hum_pct);
+}

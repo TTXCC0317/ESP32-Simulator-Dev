@@ -1,4 +1,5 @@
 import { partDefinitionSchema, type PartDefinition } from '@esp32-sim/shared';
+import type { DeviceSpec } from '@esp32-sim/shared';
 import boardJson from '../../../../config/parts/board-esp32-devkit-c-v4.json';
 import bh1750Json from '../../../../config/parts/wokwi-bh1750.json';
 import buzzerJson from '../../../../config/parts/wokwi-buzzer.json';
@@ -61,5 +62,9 @@ export const p1ValidationContext = {
   pinNames: (type: string) => {
     const def = P1_CATALOG.get(type);
     return def ? new Set(def.pins.map((p) => p.name)) : undefined;
+  },
+  deviceSpec: (type: string) => {
+    const def = P1_CATALOG.get(type);
+    return (def?.simulator?.device ?? null) as DeviceSpec | null;
   },
 };

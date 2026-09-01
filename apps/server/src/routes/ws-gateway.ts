@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type net from 'node:net';
 import { join } from 'node:path';
-import type { CircuitDoc, I2cDeviceSpec, SpiDeviceSpec } from '@esp32-sim/shared';
+import type { CircuitDoc, DhtDeviceSpec, I2cDeviceSpec, SpiDeviceSpec } from '@esp32-sim/shared';
 import { clientMsgSchema, type ClientMsg, type ServerMsg } from '@esp32-sim/shared';
 import type { AppConfig } from '../config/schema';
 import type { Db } from '../db/client';
@@ -42,6 +42,8 @@ interface GwSession {
   /** M8 i2c.txn / spi.txn 事件单调序号 */
   i2cSeq: number;
   spiSeq: number;
+  /** M8 后续：DHT22 请求事件单调序号 */
+  dhtSeq: number;
   /** 固件上报的 pull 语义（PIN_MODE 帧）→ release 回退电平 */
   pinPull: Map<number, 0 | 1>;
   /** 引脚邻接表（attach 时由 circuit 构建，input.pin 映射板卡 GPIO 用） */
@@ -52,6 +54,8 @@ interface GwSession {
   i2cDevices: Map<number, I2cDeviceSpec>;
   /** M8 设备表：csGpio → SPI 设备语义 */
   spiDevices: Map<number, SpiDeviceSpec>;
+  /** M8 后续：DHT22 等 env-sensor → 运行时 pin 映射 + 默认值 */
+  dhtDevices: Map<number, { partId: string; temp: number; humidity: number }>;
   /** 固件 panic 扫描缓冲（串口文本尾部窗口，防关键词跨 chunk 切断） */
   panicTail: string;
   /** 本会话 panic 自动重启次数（上限 1 次；ctrl reset / 重新 attach 归零） */
@@ -146,11 +150,13 @@ export async function wsGatewayRoutes(
       gpioSeq: 0,
       i2cSeq: 0,
       spiSeq: 0,
+      dhtSeq: 0,
       pinPull: new Map(),
       adj: null,
       boardPartId: null,
       i2cDevices: new Map(),
       spiDevices: new Map(),
+      dhtDevices: new Map(),
       panicTail: '',
       panicRetries: 0,
       unsubBuild: null,
@@ -284,9 +290,10 @@ export async function wsGatewayRoutes(
     s.boardPartId =
       p.circuit.parts.find((part) => part.type === `board-${s.boardType}`)?.id ?? null;
     s.pinPull = new Map();
-    // M8 I2C/SPI 设备表：扫描 circuit.parts 中带 simulator.device 的元件
+    // M8 I2C/SPI/DHT22 设备表：扫描 circuit.parts 中带 simulator.device 的元件
     s.i2cDevices = new Map();
     s.spiDevices = new Map();
+    s.dhtDevices = new Map();
     buildDeviceTables(s, p.circuit);
     setState(s, 'attaching');
     resolveBuild(s);
@@ -294,14 +301,17 @@ export async function wsGatewayRoutes(
 
   /**
    * M8 设备表构建：遍历 circuit.parts 查 parts_catalog，收集 simulator.device
-   *（i2c-device / spi-device）；网关在 onI2cTxn/onSpiTxn 时查表算回复。
+   *（i2c-device / spi-device / env-sensor）；网关在 onI2cTxn/onSpiTxn/onDhtTxn 时查表算回复。
    */
   function buildDeviceTables(s: GwSession, circuit: CircuitDoc): void {
     const stmt = db.prepare('SELECT definition_json FROM parts_catalog WHERE type = ?');
     for (const part of circuit.parts) {
       const row = stmt.get(part.type) as { definition_json: string } | undefined;
       if (!row) continue;
-      let def: { simulator?: { device?: unknown } };
+      let def: {
+        simulator?: { device?: unknown };
+        pins?: { name: string; role?: string }[];
+      };
       try {
         def = JSON.parse(row.definition_json) as typeof def;
       } catch {
@@ -309,11 +319,27 @@ export async function wsGatewayRoutes(
       }
       const dev = def.simulator?.device;
       if (!dev) continue;
-      const d = dev as I2cDeviceSpec | SpiDeviceSpec;
+      const d = dev as I2cDeviceSpec | SpiDeviceSpec | DhtDeviceSpec;
       if (d.kind === 'i2c-device') {
         s.i2cDevices.set(d.address, d);
       } else if (d.kind === 'spi-device') {
         s.spiDevices.set(d.csGpio, d);
+      } else if (d.kind === 'env-sensor') {
+        /* 运行时 pin 映射：从 parts_catalog.pins 找 role='signal.io' 的 pin name */
+        const signalPinName = def.pins?.find((p) => p.role === 'signal.io')?.name;
+        if (!signalPinName) continue;
+        const gpio = resolveGpio(s, part.id, signalPinName);
+        if (gpio === null) continue;
+        /* attrs 覆盖 defaults */
+        const temp =
+          typeof part.attrs.temperature === 'number'
+            ? (part.attrs.temperature as number)
+            : (d.defaults?.temperature ?? 22);
+        const humidity =
+          typeof part.attrs.humidity === 'number'
+            ? (part.attrs.humidity as number)
+            : (d.defaults?.humidity ?? 50);
+        s.dhtDevices.set(gpio, { partId: part.id, temp, humidity });
       }
     }
   }
@@ -597,6 +623,28 @@ export async function wsGatewayRoutes(
             const device = s.spiDevices.get(ev.cs);
             const reply = computeSpiReply(device, ev.data);
             s.bridge?.sendSpiReply(ev.cs, reply);
+          },
+          /** M8 后续：DHT22 单总线请求 —— 查 dhtDevices 回复 */
+          onDhtTxn: (ev) => {
+            s.dhtSeq += 1;
+            const device = s.dhtDevices.get(ev.pin);
+            if (device) {
+              const tempRaw = Math.round(device.temp * 10);
+              const humRaw = Math.round(device.humidity * 10);
+              send(s, {
+                type: 'sensor.data',
+                payload: {
+                  partId: device.partId,
+                  data: { temperature: device.temp, humidity: device.humidity },
+                  gpio: ev.pin,
+                  seq: s.dhtSeq,
+                },
+              });
+              s.bridge?.sendDhtReply(ev.pin, tempRaw, humRaw);
+            } else {
+              /* 未配置的 pin：回复 0（255.1℃，-1.0%），避免 glue 超时死锁 */
+              s.bridge?.sendDhtReply(ev.pin, 0, 0);
+            }
           },
         });
         gpioSocket.on('close', () => {

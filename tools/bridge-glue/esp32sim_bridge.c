@@ -107,8 +107,12 @@ extern void __detachInterrupt(uint8_t pin);
 #define FR_TLV_THRESHOLD  0x20u
 #define FR_I2C_TXN      0x20u
 #define FR_SPI_TXN      0x21u
+/* M8 后续：DHT22 单总线请求 */
+#define FR_DHT22_TXN    0x22u
 #define FR_SENSOR_REPLY 0x30u
 #define FR_SPI_REPLY    0x31u
+/* M8 后续：DHT22 回复 */
+#define FR_DHT22_REPLY  0x32u
 
 /* M8 回复等待槽：单 UART 通道，shim 必须串行调用 */
 #define BR_REPLY_TIMEOUT_MS 50u
@@ -249,9 +253,9 @@ static void br_rx_task(void *arg);
 
 /* M8 TLV 回复处理：复制 data 到 s_reply_buf 并 give 信号量 */
 static void br_handle_reply(uint8_t type, const uint8_t *payload, uint8_t len) {
-  if (type != FR_SENSOR_REPLY && type != FR_SPI_REPLY) return;
-  /* SENSOR_REPLY: addr | data[] ；SPI_REPLY: cs | data[]
-   * 共同格式：第 1 字节为 addr/cs，剩余为 data */
+  if (type != FR_SENSOR_REPLY && type != FR_SPI_REPLY && type != FR_DHT22_REPLY) return;
+  /* SENSOR_REPLY: addr | data[] ；SPI_REPLY: cs | data[] ；DHT22_REPLY: pin | tempRaw_hi | tempRaw_lo | humRaw_hi | humRaw_lo
+   * 共同格式：第 1 字节为 addr/cs/pin，剩余为 data */
   if (len == 0) {
     s_reply_len = 0;
   } else {
@@ -420,6 +424,36 @@ size_t br_spi_txn(uint8_t cs, const uint8_t *wdata, uint8_t wlen,
   if (copy > rlen_cap) copy = rlen_cap;
   for (size_t i = 0; i < copy; i++) rbuf[i] = s_reply_buf[i];
   return copy;
+}
+
+/* M8 后续：DHT22 请求发送 + 阻塞等待回复 */
+/* 返回 1 成功（out_temp_raw/out_hum_raw 写入），0 失败/超时 */
+int br_dht22_txn(uint8_t pin, uint16_t *out_temp_raw, uint16_t *out_hum_raw) {
+  br_init();
+  if (s_reply_sem == NULL) return 0;
+  if (xPortInIsrContext() != pdFALSE) return 0;
+
+  /* payload: pin (1 byte) */
+  uint8_t payload = pin;
+
+  while (xSemaphoreTake(s_reply_sem, 0) == pdTRUE) { /* drain */ }
+  s_reply_len = 0;
+
+  br_send_tlv(FR_DHT22_TXN, &payload, 1);
+
+  if (xSemaphoreTake(s_reply_sem, pdMS_TO_TICKS(BR_REPLY_TIMEOUT_MS)) != pdTRUE) {
+    return 0;
+  }
+
+  /* DHT22_REPLY data 格式（4 bytes）：tempRaw_hi | tempRaw_lo | humRaw_hi | humRaw_lo */
+  if (s_reply_len < 4) return 0;
+  if (out_temp_raw != NULL) {
+    *out_temp_raw = (uint16_t)(s_reply_buf[0] << 8) | s_reply_buf[1];
+  }
+  if (out_hum_raw != NULL) {
+    *out_hum_raw = (uint16_t)(s_reply_buf[2] << 8) | s_reply_buf[3];
+  }
+  return 1;
 }
 
 /* ---- HAL 强定义（覆盖 core 的 weak alias，统一进桥） ---- */

@@ -160,6 +160,7 @@ describe('serverMsgSchema（03-§2.4）', () => {
       'uart.rx',
       'i2c.txn',
       'spi.txn',
+      'sensor.data',
       'fb.update',
       'log',
       'error.ack',

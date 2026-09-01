@@ -87,7 +87,18 @@ export interface SpiDeviceSpec {
   registers?: I2cRegisterSpec[];
 }
 
-export type DeviceSpec = I2cDeviceSpec | SpiDeviceSpec;
+/**
+ * M8 后续：环境传感器设备语义（DHT22、AHT20 等单总线/非标准协议传感器）
+ * 注：pinGpio 由 ws-gateway buildDeviceTables 运行时从 circuit connections 解析
+ * （definition_json 不固定引脚，因为传感器可接任意 GPIO）
+ */
+export interface DhtDeviceSpec {
+  kind: 'env-sensor';
+  /** attrs 默认值（Inspector 滑杆可注入覆盖；默认 temp=22, humidity=50） */
+  defaults: { temperature: number; humidity: number };
+}
+
+export type DeviceSpec = I2cDeviceSpec | SpiDeviceSpec | DhtDeviceSpec;
 
 export interface PartDefinition {
   type: string;

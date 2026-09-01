@@ -38,6 +38,15 @@ size_t br_i2c_txn(uint8_t addr, uint8_t dir, const uint8_t *wdata, uint8_t wlen,
 size_t br_spi_txn(uint8_t cs, const uint8_t *wdata, uint8_t wlen,
                   uint8_t *rbuf, uint8_t rlen_cap);
 
+/**
+ * M8 后续：DHT22 单总线请求（DHT 库 shim 内部调用）：
+ * 简化协议：不模拟 20ms 拉低 start / 40µs 位级时序，直接给 raw 值
+ * tempRaw = Math.round(temperature * 10)（最高位=符号）
+ * humRaw  = Math.round(humidity * 10)
+ * 返回 1 成功，0 超时/失败
+ */
+int br_dht22_txn(uint8_t pin, uint16_t *out_temp_raw, uint16_t *out_hum_raw);
+
 #ifdef __cplusplus
 }
 #endif

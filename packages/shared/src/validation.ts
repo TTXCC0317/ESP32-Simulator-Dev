@@ -1,5 +1,6 @@
 import type { ZodError } from 'zod';
 import { circuitDocSchema, type CircuitDoc, type CircuitValidation, type PinRef } from './circuit';
+import type { DeviceSpec } from './catalog';
 
 /**
  * 电路文档校验（《03-核心模块详细设计》§2.1 CircuitValidation、§6.1；
@@ -31,6 +32,8 @@ export interface ValidationContext {
   partTypes: ReadonlySet<string>;
   /** 类型 → 引脚名集合；同名引脚（板卡左右列）只出现一次 */
   pinNames: (type: string) => ReadonlySet<string> | undefined;
+  /** M8：类型 → DeviceSpec（I2C/SPI 设备语义）；null = 非总线设备 */
+  deviceSpec?: (type: string) => DeviceSpec | null;
   limits?: CircuitLimits;
 }
 
@@ -144,6 +147,41 @@ export function validateCircuitDoc(raw: unknown, ctx: ValidationContext): Circui
           code: 'BAD_PINREF',
           message: `元件 ${part.type}(${part.id}) 无引脚 ${pr.pin}（连线 ${c.id}）`,
           path: `connections.${c.id}`,
+        });
+      }
+    }
+  }
+
+  // M8：I2C 地址冲突 + SPI CS 冲突扫描（buildDeviceTables 同 addr 覆盖前者，需 UI 提示）
+  if (ctx.deviceSpec) {
+    const i2cByAddr = new Map<number, string[]>();
+    const spiByCs = new Map<number, string[]>();
+    for (const p of doc.parts) {
+      const spec = ctx.deviceSpec(p.type);
+      if (!spec) continue;
+      if (spec.kind === 'i2c-device') {
+        const list = i2cByAddr.get(spec.address) ?? [];
+        list.push(`${p.type}(${p.id})`);
+        i2cByAddr.set(spec.address, list);
+      } else if (spec.kind === 'spi-device') {
+        const list = spiByCs.get(spec.csGpio) ?? [];
+        list.push(`${p.type}(${p.id})`);
+        spiByCs.set(spec.csGpio, list);
+      }
+    }
+    for (const [addr, parts] of i2cByAddr) {
+      if (parts.length > 1) {
+        errors.push({
+          code: 'I2C_ADDR_CONFLICT',
+          message: `I2C 地址 0x${addr.toString(16).toUpperCase().padStart(2, '0')} 冲突: ${parts.join(', ')}`,
+        });
+      }
+    }
+    for (const [cs, parts] of spiByCs) {
+      if (parts.length > 1) {
+        errors.push({
+          code: 'SPI_CS_CONFLICT',
+          message: `SPI CS GPIO ${cs} 冲突: ${parts.join(', ')}`,
         });
       }
     }

@@ -23,6 +23,28 @@ export const goldenInputEventSchema = z.object({
   release: z.boolean().optional(),
 });
 
+/** M8：expect.i2c 断言——期望的 I2C 事务序列（引擎B 从 TLV 帧收；引擎A shim 未实现则 skip） */
+export const goldenI2cExpectSchema = z.object({
+  addr: z.number().int().min(0).max(0x7f),
+  dir: z.enum(['w', 'r']),
+  /** w 事务：写入字节序列（Wire.write 内容）；r 事务不填（长度由寄存器表决定） */
+  data: z.array(z.number().int().min(0).max(0xff)).optional(),
+});
+
+/**
+ * M8 后续：expect.sensor 断言——期望的环境传感器读数（DHT22 等 env-sensor）
+ * tolerance: 允许误差（默认 0.1；DHT22 ±0.5℃ / ±2%RH，取 0.5）
+ * 注：sensor.data 从 ws-gateway sensor.data 事件收集，匹配逻辑用 Record<string,number>
+ */
+export const goldenSensorExpectSchema = z.object({
+  /** circuit 中 env-sensor part 的 id（定位设备） */
+  partId: z.string().min(1),
+  /** 期望读数 key→value：{ temperature: 22, humidity: 50 } */
+  data: z.record(z.number()),
+  /** 绝对误差容限（默认 0.5） */
+  tolerance: z.number().min(0).optional(),
+});
+
 export const goldenScriptSchema = z
   .object({
     exampleId: z.string().min(1),
@@ -53,11 +75,20 @@ export const goldenScriptSchema = z
             'gpio 断言至少需要 highs/lows/minPwm 中的一个字段',
           )
           .optional(),
+        /** M8：I2C 事务序列断言（前缀匹配——durationMs 窗口内收集到的事务应至少覆盖此序列） */
+        i2c: z.array(goldenI2cExpectSchema).optional(),
+        /** M8 后续：环境传感器读数断言（收集 sensor.data 事件，匹配 partId + 数值容限） */
+        sensor: z.array(goldenSensorExpectSchema).optional(),
       })
       .strict()
       .refine(
-        (e) => e.serialCycle !== undefined || e.serialContainsAll !== undefined,
-        'expect 必须提供 serialCycle 或 serialContainsAll 至少一项',
+        (e) =>
+          e.serialCycle !== undefined ||
+          e.serialContainsAll !== undefined ||
+          e.gpio !== undefined ||
+          e.i2c !== undefined ||
+          e.sensor !== undefined,
+        'expect 必须提供 serialCycle/serialContainsAll/gpio/i2c/sensor 至少一项',
       ),
   })
   .strict();
@@ -67,6 +98,12 @@ export type GoldenInputEvent = z.infer<typeof goldenInputEventSchema>;
 
 export type GoldenEngine = 'micropython-wasm' | 'qemu-remote';
 
+export interface GoldenI2cTxn {
+  addr: number;
+  dir: 'w' | 'r';
+  data: number[];
+}
+
 export interface GoldenResult {
   engine: GoldenEngine;
   exampleId: string;
@@ -75,6 +112,10 @@ export interface GoldenResult {
   serialLines: string[];
   /** GPIO 实际计数（expect.gpio 或 input 存在时） */
   gpio?: { pin: number; highs: number; lows: number; pwmWrites: number };
+  /** M8：收集到的 I2C 事务序列（expect.i2c 断言用；引擎A shim 未实现则空数组） */
+  i2cTxns?: GoldenI2cTxn[];
+  /** M8 后续：收集到的 sensor.data 事件（expect.sensor 断言用） */
+  sensorActual?: { partId: string; data: Record<string, number>; gpio: number }[];
   /** 失败原因（ok=false 时） */
   error?: string;
 }

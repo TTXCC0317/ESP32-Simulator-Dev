@@ -55,7 +55,14 @@ export interface CircuitDoc {
 export interface CircuitValidation {
   ok: boolean;
   errors: Array<{
-    code: 'BAD_JSON' | 'DUP_PART_ID' | 'BAD_PINREF' | 'OVER_LIMIT' | 'UNKNOWN_TYPE';
+    code:
+      | 'BAD_JSON'
+      | 'DUP_PART_ID'
+      | 'BAD_PINREF'
+      | 'OVER_LIMIT'
+      | 'UNKNOWN_TYPE'
+      | 'I2C_ADDR_CONFLICT'
+      | 'SPI_CS_CONFLICT';
     message: string;
     path?: string;
   }>;

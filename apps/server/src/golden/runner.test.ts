@@ -7,6 +7,7 @@ import { openDatabase } from '../db/client';
 import { runMigrations } from '../db/migrator';
 import { MODE_INPUT, MODE_PULLUP } from '../services/gpio.bridge';
 import {
+  assertI2cPrefix,
   assertSerialCycle,
   runGoldenEngineA,
   runGoldenEngineB,
@@ -47,6 +48,85 @@ describe('assertSerialCycle（串口循环断言）', () => {
     expect(
       assertSerialCycle(['LED OFF', 'LED ON', 'LED OFF', 'LED ON'], ['LED ON', 'LED OFF'], 2),
     ).toBe(false);
+  });
+});
+
+/** M8：I2C 事务序列断言纯函数测试（前缀匹配） */
+describe('assertI2cPrefix（I2C 事务前缀匹配）', () => {
+  it('空 expect → true', () => {
+    expect(assertI2cPrefix([], [])).toBe(true);
+    expect(assertI2cPrefix([{ addr: 0x23, dir: 'r', data: [] }], [])).toBe(true);
+  });
+
+  it('完全相等序列 → true', () => {
+    const txns = [
+      { addr: 0x23, dir: 'w' as const, data: [0x10] },
+      { addr: 0x23, dir: 'r' as const, data: [0, 120] },
+    ];
+    const exp = [
+      { addr: 0x23, dir: 'w' as const, data: [0x10] },
+      { addr: 0x23, dir: 'r' as const },
+    ];
+    expect(assertI2cPrefix(txns, exp)).toBe(true);
+  });
+
+  it('expect 是前缀 → true（收集到更多事务）', () => {
+    const txns = [
+      { addr: 0x23, dir: 'w' as const, data: [0x10] },
+      { addr: 0x23, dir: 'r' as const, data: [0, 120] },
+      { addr: 0x23, dir: 'w' as const, data: [0x10] },
+      { addr: 0x23, dir: 'r' as const, data: [0, 120] },
+    ];
+    const exp = [
+      { addr: 0x23, dir: 'w' as const, data: [0x10] },
+      { addr: 0x23, dir: 'r' as const },
+    ];
+    expect(assertI2cPrefix(txns, exp)).toBe(true);
+  });
+
+  it('收集不足 → false', () => {
+    expect(
+      assertI2cPrefix(
+        [{ addr: 0x23, dir: 'w', data: [0x10] }],
+        [
+          { addr: 0x23, dir: 'w', data: [0x10] },
+          { addr: 0x23, dir: 'r' },
+        ],
+      ),
+    ).toBe(false);
+  });
+
+  it('addr 不匹配 → false', () => {
+    expect(
+      assertI2cPrefix(
+        [{ addr: 0x24, dir: 'w', data: [0x10] }],
+        [{ addr: 0x23, dir: 'w', data: [0x10] }],
+      ),
+    ).toBe(false);
+  });
+
+  it('dir 不匹配 → false', () => {
+    expect(
+      assertI2cPrefix(
+        [{ addr: 0x23, dir: 'r', data: [0x10] }],
+        [{ addr: 0x23, dir: 'w', data: [0x10] }],
+      ),
+    ).toBe(false);
+  });
+
+  it('w 事务 data 不匹配 → false', () => {
+    expect(
+      assertI2cPrefix(
+        [{ addr: 0x23, dir: 'w', data: [0x11] }],
+        [{ addr: 0x23, dir: 'w', data: [0x10] }],
+      ),
+    ).toBe(false);
+  });
+
+  it('r 事务 expect.data 可省略', () => {
+    expect(
+      assertI2cPrefix([{ addr: 0x23, dir: 'r', data: [0, 120] }], [{ addr: 0x23, dir: 'r' }]),
+    ).toBe(true);
   });
 });
 

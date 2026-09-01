@@ -474,9 +474,10 @@ const MPU6050_ROLL_MANIFEST: ExampleManifest = {
 
 /**
  * dht22-basic 示例（M8 DHT22 单总线温湿度）：
- * - main.py / main.ino：引擎A 单总线 shim 待 stage 2；引擎B glue 单总线时序模拟待后续；
- *   双引擎均回退硬编码读数（attrs 默认 temperature=22 / humidity=50），
- *   走 serialContainsAll 断言；后续 glue 单总线支持补上后切换为真实 DHT22 库调用。
+ * - main.py / main.ino：引擎A wasm shim I2C/SPI/DHT22 类待 stage 2 emsdk 重建；
+ *   引擎B 已切到 glue esp32sim_dht22_read 真实单总线调用（glue bridge DHT22_TXN/REPLY 帧）。
+ *   双引擎串口均打印 "TEMP: 22.0 HUM: 50.0"（与 attrs 默认值 22/50 对齐），
+ *   走 serialContainsAll + expect.sensor 双重断言（sensor.data 由 ws-gateway 在 onDhtTxn 时推送）。
  */
 const DHT22_BASIC_DIAGRAM = JSON.stringify({
   formatVersion: 1,
@@ -502,7 +503,7 @@ const DHT22_BASIC_MANIFEST: ExampleManifest = {
     {
       path: 'main.py',
       content: [
-        '# 引擎A 单总线 shim 待 M8 阶段2 补全；当前打印 attrs 默认值',
+        '# 引擎A wasm shim I2C/SPI/DHT22 类待 stage 2 emsdk 重建；当前打印 attrs 默认值',
         'import time',
         '',
         'while True:',
@@ -514,13 +515,27 @@ const DHT22_BASIC_MANIFEST: ExampleManifest = {
     {
       path: 'main.ino',
       content: [
-        '// DHT22 单总线时序模拟待 M8 后续补全；当前打印 attrs 默认值',
+        '// DHT22 单总线：glue esp32sim_dht22_read 真实调用（M8 stage 2 DHT22 TXN/REPLY 帧）',
+        '#include <Arduino.h>',
+        '#include "esp32sim_bridge.h"',
+        '',
+        'const int DHTPIN = 4;  // GPIO4 接 dh1:SDA',
+        '',
         'void setup() {',
         '  Serial.begin(115200);',
         '}',
         '',
         'void loop() {',
-        '  Serial.println("TEMP: 22.0 HUM: 50.0");',
+        '  float t, h;',
+        '  if (esp32sim_dht22_read(DHTPIN, &t, &h)) {',
+        '    Serial.print("TEMP: ");',
+        '    Serial.print(t, 1);',
+        '    Serial.print(" HUM: ");',
+        '    Serial.print(h, 1);',
+        '    Serial.println();',
+        '  } else {',
+        '    Serial.println("DHT22 read failed");',
+        '  }',
         '  delay(2000);',
         '}',
         '',

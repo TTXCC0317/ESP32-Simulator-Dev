@@ -340,6 +340,69 @@ export class MpyWasmEngine implements SimulationEngine {
         if (!ref) return 0;
         return this.bus.adcRead(ref) ?? 0;
       },
+      // ---- M8 stage 2：I2C/SPI/DHT22 占位桥 ----
+      // 当前 PinBus 未实现 I2C/SPI 事务，返回空结果避免 main.py 调 machine.I2C 抛异常。
+      // 待 PinBus 扩展 i2c/spi 事务（i2c.txn/spi.txn 事件 + DeviceSpec 查表）后桥接真实设备。
+      i2cScan: (_port: number): number[] => {
+        this.log('warn', 'I2C.scan() 占位返回空列表（PinBus I2C 事务未实现）');
+        return [];
+      },
+      i2cWriteto: (_port: number, _addr: number, _data: Uint8Array): void => {
+        this.seq.i2c += 1;
+        this.emit('i2c.txn', {
+          addr: _addr,
+          dir: 'w' as const,
+          data: _data,
+          seq: this.seq.i2c,
+        });
+      },
+      i2cReadfrom: (_port: number, _addr: number, _maxlen: number): Uint8Array => {
+        this.seq.i2c += 1;
+        this.emit('i2c.txn', {
+          addr: _addr,
+          dir: 'r' as const,
+          data: new Uint8Array(0),
+          seq: this.seq.i2c,
+        });
+        return new Uint8Array(0);
+      },
+      i2cWrrd: (_port: number, _addr: number, _wdata: Uint8Array, _rlen: number): Uint8Array => {
+        this.seq.i2c += 1;
+        this.emit('i2c.txn', {
+          addr: _addr,
+          dir: 'w' as const,
+          data: _wdata,
+          seq: this.seq.i2c,
+        });
+        this.seq.i2c += 1;
+        this.emit('i2c.txn', {
+          addr: _addr,
+          dir: 'r' as const,
+          data: new Uint8Array(0),
+          seq: this.seq.i2c,
+        });
+        return new Uint8Array(_rlen);
+      },
+      spiWrite: (_port: number, _data: Uint8Array): void => {
+        this.seq.spi += 1;
+        this.emit('spi.txn', {
+          cs: 0,
+          data: _data,
+          seq: this.seq.spi,
+        });
+      },
+      spiTransfer: (_port: number, tx: Uint8Array): Uint8Array => {
+        this.seq.spi += 1;
+        this.emit('spi.txn', { cs: 0, data: tx, seq: this.seq.spi });
+        return new Uint8Array(tx.length);
+      },
+      /**
+       * DHT22 单总线读占位：返回 attrs 默认 temperature=22 / humidity=50
+       *（与 dht22-basic main.py 硬编码打印值对齐；PinBus 扩展后桥接真实 DeviceSpec）
+       */
+      dht22Read: (_pin: number): { temperature: number; humidity: number } => {
+        return { temperature: 22.0, humidity: 50.0 };
+      },
     };
     (globalThis as unknown as Record<string, unknown>).__mpyMachine = bridge;
 
