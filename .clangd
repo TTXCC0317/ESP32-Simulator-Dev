@@ -14,6 +14,6 @@ Diagnostics:
 # 宿主机 clangd 没有对应的 compile_commands.json → 报 "Unable to handle compilation"
 # 误报（sketch 已在 Golden 引擎B 全流程验证编译运行通过）。
 If:
-  PathMatch: (.*/)?examples/.*\.ino$
+  PathMatch: (.*/)?examples/.*\.ino
 Diagnostics:
   Suppress: ['*']
