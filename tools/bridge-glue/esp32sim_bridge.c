@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ESP32Sim 引擎B HAL 桥 glue（M7/M8 方案，03-§7.2.2）
  *
  * 强符号覆盖 Arduino GPIO HAL（无 --wrap，无需编译命令注入）：

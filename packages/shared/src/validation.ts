@@ -154,34 +154,38 @@ export function validateCircuitDoc(raw: unknown, ctx: ValidationContext): Circui
 
   // M8：I2C 地址冲突 + SPI CS 冲突扫描（buildDeviceTables 同 addr 覆盖前者，需 UI 提示）
   if (ctx.deviceSpec) {
-    const i2cByAddr = new Map<number, string[]>();
-    const spiByCs = new Map<number, string[]>();
+    const i2cByAddr = new Map<number, { ids: string[]; labels: string[] }>();
+    const spiByCs = new Map<number, { ids: string[]; labels: string[] }>();
     for (const p of doc.parts) {
       const spec = ctx.deviceSpec(p.type);
       if (!spec) continue;
       if (spec.kind === 'i2c-device') {
-        const list = i2cByAddr.get(spec.address) ?? [];
-        list.push(`${p.type}(${p.id})`);
-        i2cByAddr.set(spec.address, list);
+        const entry = i2cByAddr.get(spec.address) ?? { ids: [], labels: [] };
+        entry.ids.push(p.id);
+        entry.labels.push(`${p.type}(${p.id})`);
+        i2cByAddr.set(spec.address, entry);
       } else if (spec.kind === 'spi-device') {
-        const list = spiByCs.get(spec.csGpio) ?? [];
-        list.push(`${p.type}(${p.id})`);
-        spiByCs.set(spec.csGpio, list);
+        const entry = spiByCs.get(spec.csGpio) ?? { ids: [], labels: [] };
+        entry.ids.push(p.id);
+        entry.labels.push(`${p.type}(${p.id})`);
+        spiByCs.set(spec.csGpio, entry);
       }
     }
-    for (const [addr, parts] of i2cByAddr) {
-      if (parts.length > 1) {
+    for (const [addr, { ids, labels }] of i2cByAddr) {
+      if (ids.length > 1) {
         errors.push({
           code: 'I2C_ADDR_CONFLICT',
-          message: `I2C 地址 0x${addr.toString(16).toUpperCase().padStart(2, '0')} 冲突: ${parts.join(', ')}`,
+          message: `I2C 地址 0x${addr.toString(16).toUpperCase().padStart(2, '0')} 冲突: ${labels.join(', ')}`,
+          partIds: ids,
         });
       }
     }
-    for (const [cs, parts] of spiByCs) {
-      if (parts.length > 1) {
+    for (const [cs, { ids, labels }] of spiByCs) {
+      if (ids.length > 1) {
         errors.push({
           code: 'SPI_CS_CONFLICT',
-          message: `SPI CS GPIO ${cs} 冲突: ${parts.join(', ')}`,
+          message: `SPI CS GPIO ${cs} 冲突: ${labels.join(', ')}`,
+          partIds: ids,
         });
       }
     }

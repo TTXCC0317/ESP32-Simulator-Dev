@@ -65,6 +65,8 @@ export interface CircuitValidation {
       | 'SPI_CS_CONFLICT';
     message: string;
     path?: string;
+    /** 冲突涉及的 partId 列表（I2C_ADDR_CONFLICT / SPI_CS_CONFLICT 专用，用于 Inspector 红框渲染） */
+    partIds?: string[];
   }>;
 }
 

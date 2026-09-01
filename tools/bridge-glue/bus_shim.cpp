@@ -5,7 +5,7 @@
  * sketch 目标文件先链接 + --allow-multiple-definition → 本文件定义胜出。
  * 证据：M8 D2 探针 wire-shim 实测 "SHIM-BEGIN-CALLED", "ENDTX-ERR=0", "REQ-N=2"。
  *
- * 永不进入 ESP-IDF i2c_*/spi_* 驱动路径：QEMU 不模拟 I2C/SPI 外设 →
+ * 永不进入 ESP-IDF i2c_\* / spi_\* 驱动路径：QEMU 不模拟 I2C/SPI 外设 ->
  * 静默失败（Wire.begin/endTransmission 恒成功但无硬件交互；SPI.transfer 回显
  * 发送值）——比 M7 ADC panic 更隐蔽，glue 必须完全短路。
  *

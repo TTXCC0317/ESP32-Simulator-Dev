@@ -64,6 +64,8 @@ interface PartViewProps {
   part: PartInstance;
   def: PartDefinition;
   selected: boolean;
+  /** M8：I2C_ADDR_CONFLICT / SPI_CS_CONFLICT 红框标记 */
+  conflict: boolean;
   hoverPin: string | null;
   wiringFrom: string | null;
   netMap: NetMap;
@@ -623,6 +625,7 @@ export function PartView(props: PartViewProps) {
     part,
     def,
     selected,
+    conflict,
     hoverPin,
     netMap,
     runtimeActive,
@@ -833,6 +836,20 @@ export function PartView(props: PartViewProps) {
         />
       )}
 
+      {/* M8：I2C/SPI 地址冲突红框（在选中框外层，冲突优先级更高） */}
+      {conflict && (
+        <Rect
+          x={-5}
+          y={-5}
+          width={w + 10}
+          height={h + 10}
+          cornerRadius={4}
+          stroke="#dc2626"
+          strokeWidth={2.5}
+          listening={false}
+        />
+      )}
+
       {bodyShape(part, def, rt)}
 
       {/* 名称标签 */}
@@ -894,6 +911,7 @@ interface PartLayerProps {
 
 export function PartLayer(props: PartLayerProps) {
   const doc = useCircuitStore((s) => s.doc);
+  const conflictPartIds = useCircuitStore((s) => s.conflictPartIds);
   const status = useSimStore((s) => s.status);
   // 网络映射随电路重建（M5 元件运行时：gpioOf/netRoleOf + 注入信号脚选择共用）
   const netMap = useMemo(() => buildNetMap(doc, P1_CATALOG), [doc]);
@@ -910,6 +928,7 @@ export function PartLayer(props: PartLayerProps) {
             part={p}
             def={def}
             selected={props.selectedIds.has(p.id)}
+            conflict={conflictPartIds.has(p.id)}
             hoverPin={props.hoverPin}
             wiringFrom={props.wiringFrom}
             netMap={netMap}

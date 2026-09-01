@@ -75,10 +75,12 @@ function InspectorBody() {
 function PartInspector({ part }: { part: PartInstance }) {
   const def = P1_CATALOG.get(part.type);
   const error = useCircuitStore((s) => s.error);
+  const conflictPartIds = useCircuitStore((s) => s.conflictPartIds);
   if (!def) {
     return <div className="p-3 text-xs text-danger">未知元件类型: {part.type}</div>;
   }
   const isBoard = part.type.startsWith('board-');
+  const hasConflict = conflictPartIds.has(part.id);
 
   return (
     <div className="flex-1 space-y-3 overflow-y-auto p-3">
@@ -89,7 +91,17 @@ function PartInspector({ part }: { part: PartInstance }) {
         </p>
       </div>
 
-      {error && (
+      {/* M8：I2C/SPI 地址冲突专用提示（优先级高于通用 error） */}
+      {hasConflict && (
+        <p
+          className="rounded border border-danger bg-danger/15 px-2 py-1.5 text-xs text-danger"
+          role="alert"
+        >
+          ⚠ 地址冲突：与其他元件共享相同 I2C 地址或 SPI CS 引脚，请检查画布上带红框的元件。
+        </p>
+      )}
+
+      {error && !hasConflict && (
         <p className="rounded bg-danger/15 px-2 py-1 text-xs text-danger" role="alert">
           {error}
         </p>

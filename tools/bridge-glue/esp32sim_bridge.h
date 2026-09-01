@@ -1,4 +1,4 @@
-#ifndef ESP32SIM_BRIDGE_H
+﻿#ifndef ESP32SIM_BRIDGE_H
 #define ESP32SIM_BRIDGE_H
 
 /**

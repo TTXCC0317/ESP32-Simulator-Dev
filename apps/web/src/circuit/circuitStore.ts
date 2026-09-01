@@ -28,6 +28,8 @@ export interface CircuitStore {
   error?: string;
   selectedPartIds: PartId[];
   selectedConnectionId?: string;
+  /** I2C_ADDR_CONFLICT / SPI_CS_CONFLICT 涉及的 partId 集合（用于 Canvas 红框渲染） */
+  conflictPartIds: Set<string>;
 
   addPart(type: string, at: Vec2): PartId | null;
   movePart(id: PartId, to: Vec2): void;
@@ -68,7 +70,20 @@ function freshState() {
     error: undefined,
     selectedPartIds: [] as PartId[],
     selectedConnectionId: undefined,
+    conflictPartIds: new Set<string>(),
   };
+}
+
+/** 从 validateCircuitDoc 提取 I2C/SPI 地址冲突涉及的 partId 集合（M8 Inspector 红框） */
+function computeConflictPartIds(doc: CircuitDoc): Set<string> {
+  const v = validateCircuitDoc(doc, p1ValidationContext);
+  const set = new Set<string>();
+  for (const e of v.errors) {
+    if (e.code === 'I2C_ADDR_CONFLICT' || e.code === 'SPI_CS_CONFLICT') {
+      e.partIds?.forEach((id) => set.add(id));
+    }
+  }
+  return set;
 }
 
 export const useCircuitStore = create<CircuitStore>()((set, get) => ({
@@ -98,6 +113,7 @@ export const useCircuitStore = create<CircuitStore>()((set, get) => ({
       error: undefined,
       selectedPartIds: [part.id],
       selectedConnectionId: undefined,
+      conflictPartIds: computeConflictPartIds({ ...doc, parts: [...doc.parts, part] }),
     });
     return part.id;
   },
@@ -137,16 +153,18 @@ export const useCircuitStore = create<CircuitStore>()((set, get) => ({
       set({ error: '板卡不可删除' });
       return;
     }
+    const nextDoc: CircuitDoc = {
+      ...doc,
+      parts: doc.parts.filter((x) => x.id !== id),
+      connections: doc.connections.filter(
+        (c) => !c.source.startsWith(`${id}:`) && !c.target.startsWith(`${id}:`),
+      ),
+    };
     set({
-      doc: {
-        ...doc,
-        parts: doc.parts.filter((x) => x.id !== id),
-        connections: doc.connections.filter(
-          (c) => !c.source.startsWith(`${id}:`) && !c.target.startsWith(`${id}:`),
-        ),
-      },
+      doc: nextDoc,
       dirty: true,
       selectedPartIds: get().selectedPartIds.filter((x) => x !== id),
+      conflictPartIds: computeConflictPartIds(nextDoc),
     });
   },
 
@@ -263,6 +281,7 @@ export const useCircuitStore = create<CircuitStore>()((set, get) => ({
       error: undefined,
       selectedPartIds: [],
       selectedConnectionId: undefined,
+      conflictPartIds: computeConflictPartIds(next),
     });
     return true;
   },
