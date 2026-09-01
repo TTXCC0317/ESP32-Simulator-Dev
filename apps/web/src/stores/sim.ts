@@ -76,10 +76,11 @@ export const simSession = {
     if (attachedEngine === next) return;
     attachedEngine = next;
     engine = next;
-    // 新会话：清空上一轮元件运行时状态（gpio.write/pwm.duty 汇聚）
+    // 新会话：清空上一轮元件运行时状态（gpio.write/pwm.duty/fb.update 汇聚）
     useRuntimeStore.getState().clear();
     // 引擎事件统一转 simStore 分发（组件经 subscribe(type, cb) 消费）；
-    // gpio.write/pwm.duty 同步 runtimeStore（元件渲染，M5）
+    // gpio.write/pwm.duty 同步 runtimeStore（元件渲染，M5）；
+    // fb.update/neopixel.write 同步 runtimeStore（SSD1306/LED strip 渲染，M9）
     for (const type of [
       'gpio.write',
       'pwm.duty',
@@ -87,6 +88,7 @@ export const simSession = {
       'i2c.txn',
       'spi.txn',
       'fb.update',
+      'neopixel.write',
     ] as const) {
       next.on(type, (payload) => {
         if (type === 'gpio.write') {
@@ -95,6 +97,12 @@ export const simSession = {
         } else if (type === 'pwm.duty') {
           const p = payload as EngineEventMap['pwm.duty'];
           useRuntimeStore.getState().applyPwm(p.pin, p.duty, p.freq);
+        } else if (type === 'fb.update') {
+          const p = payload as EngineEventMap['fb.update'];
+          useRuntimeStore.getState().applyFb(p.partId, p.rect, p.data);
+        } else if (type === 'neopixel.write') {
+          const p = payload as EngineEventMap['neopixel.write'];
+          useRuntimeStore.getState().applyNeopixel(p.partId, p.pixels);
         }
         dispatch(type, payload);
       });

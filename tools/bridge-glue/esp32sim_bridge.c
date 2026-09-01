@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ESP32Sim 引擎B HAL 桥 glue（M7/M8 方案，03-§7.2.2）
  *
  * 强符号覆盖 Arduino GPIO HAL（无 --wrap，无需编译命令注入）：
@@ -109,6 +109,9 @@ extern void __detachInterrupt(uint8_t pin);
 #define FR_SPI_TXN      0x21u
 /* M8 后续：DHT22 单总线请求 */
 #define FR_DHT22_TXN    0x22u
+/* M9：SSD1306 framebuffer 增量帧 / NeoPixel 像素帧（单向推送，宿主不回复） */
+#define FR_FB_TXN          0x23u
+#define FR_NEOPIXEL_WRITE  0x24u
 #define FR_SENSOR_REPLY 0x30u
 #define FR_SPI_REPLY    0x31u
 /* M8 后续：DHT22 回复 */
@@ -454,6 +457,48 @@ int br_dht22_txn(uint8_t pin, uint16_t *out_temp_raw, uint16_t *out_hum_raw) {
     *out_hum_raw = (uint16_t)(s_reply_buf[2] << 8) | s_reply_buf[3];
   }
   return 1;
+}
+
+/* M9：SSD1306 framebuffer 增量帧（单向推送）。
+ * payload: addr | x | y | w | h | data[w*h/8]；h=8 时 data 为 w 字节页位图 */
+void br_fb_txn(uint8_t addr, uint8_t x, uint8_t y, uint8_t w, uint8_t h,
+               const uint8_t *data) {
+  br_init();
+  if (!s_ready) return;
+  if (xPortInIsrContext() != pdFALSE) return;
+
+  /* data 字节数 = w*h/8（SSD1306 页行 h=8 → w 字节）；TLV len ≤ 255 总限 */
+  uint16_t nbytes = (uint16_t)((uint16_t)w * h) / 8u;
+  if (nbytes > 250u) nbytes = 250u; /* 5 头字节 + 250 data ≤ 255 */
+
+  uint8_t payload[5 + 250];
+  payload[0] = addr;
+  payload[1] = x;
+  payload[2] = y;
+  payload[3] = w;
+  payload[4] = h;
+  if (data != NULL) {
+    for (uint16_t i = 0; i < nbytes; i++) payload[5 + i] = data[i];
+  }
+  br_send_tlv(FR_FB_TXN, payload, (uint8_t)(5 + nbytes));
+}
+
+/* M9：NeoPixel 像素帧（单向推送）。
+ * payload: pin | num | data[num*3]（GRB 顺序）；num 钳位 ≤ 84（2+252 ≤ 255） */
+void br_neopixel_write(uint8_t pin, const uint8_t *grb, uint8_t num) {
+  br_init();
+  if (!s_ready) return;
+  if (xPortInIsrContext() != pdFALSE) return;
+
+  if (num > 84u) num = 84u;
+
+  uint8_t payload[2 + 84 * 3];
+  payload[0] = pin;
+  payload[1] = num;
+  if (grb != NULL) {
+    for (uint16_t i = 0; i < (uint16_t)num * 3u; i++) payload[2 + i] = grb[i];
+  }
+  br_send_tlv(FR_NEOPIXEL_WRITE, payload, (uint8_t)(2 + (uint16_t)num * 3u));
 }
 
 /* ---- HAL 强定义（覆盖 core 的 weak alias，统一进桥） ---- */

@@ -2,7 +2,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type net from 'node:net';
 import { join } from 'node:path';
-import type { CircuitDoc, DhtDeviceSpec, I2cDeviceSpec, SpiDeviceSpec } from '@esp32-sim/shared';
+import type {
+  CircuitDoc,
+  DhtDeviceSpec,
+  I2cDeviceSpec,
+  NeopixelDeviceSpec,
+  OledDeviceSpec,
+  SpiDeviceSpec,
+} from '@esp32-sim/shared';
 import { clientMsgSchema, type ClientMsg, type ServerMsg } from '@esp32-sim/shared';
 import type { AppConfig } from '../config/schema';
 import type { Db } from '../db/client';
@@ -44,6 +51,9 @@ interface GwSession {
   spiSeq: number;
   /** M8 后续：DHT22 请求事件单调序号 */
   dhtSeq: number;
+  /** M9：fb.update / neopixel.write 事件单调序号 */
+  fbSeq: number;
+  neopixelSeq: number;
   /** 固件上报的 pull 语义（PIN_MODE 帧）→ release 回退电平 */
   pinPull: Map<number, 0 | 1>;
   /** 引脚邻接表（attach 时由 circuit 构建，input.pin 映射板卡 GPIO 用） */
@@ -56,6 +66,10 @@ interface GwSession {
   spiDevices: Map<number, SpiDeviceSpec>;
   /** M8 后续：DHT22 等 env-sensor → 运行时 pin 映射 + 默认值 */
   dhtDevices: Map<number, { partId: string; temp: number; humidity: number }>;
+  /** M9 设备表：I2C addr → OLED part（FB_TXN 帧 → fb.update 定位渲染元件） */
+  oledDevices: Map<number, string>;
+  /** M9 设备表：GPIO → NeoPixel part（NEOPIXEL_WRITE 帧 → neopixel.write） */
+  neopixelPins: Map<number, string>;
   /** 固件 panic 扫描缓冲（串口文本尾部窗口，防关键词跨 chunk 切断） */
   panicTail: string;
   /** 本会话 panic 自动重启次数（上限 1 次；ctrl reset / 重新 attach 归零） */
@@ -151,12 +165,16 @@ export async function wsGatewayRoutes(
       i2cSeq: 0,
       spiSeq: 0,
       dhtSeq: 0,
+      fbSeq: 0,
+      neopixelSeq: 0,
       pinPull: new Map(),
       adj: null,
       boardPartId: null,
       i2cDevices: new Map(),
       spiDevices: new Map(),
       dhtDevices: new Map(),
+      oledDevices: new Map(),
+      neopixelPins: new Map(),
       panicTail: '',
       panicRetries: 0,
       unsubBuild: null,
@@ -294,14 +312,17 @@ export async function wsGatewayRoutes(
     s.i2cDevices = new Map();
     s.spiDevices = new Map();
     s.dhtDevices = new Map();
+    s.oledDevices = new Map();
+    s.neopixelPins = new Map();
     buildDeviceTables(s, p.circuit);
     setState(s, 'attaching');
     resolveBuild(s);
   }
 
   /**
-   * M8 设备表构建：遍历 circuit.parts 查 parts_catalog，收集 simulator.device
-   *（i2c-device / spi-device / env-sensor）；网关在 onI2cTxn/onSpiTxn/onDhtTxn 时查表算回复。
+   * M8/M9 设备表构建：遍历 circuit.parts 查 parts_catalog，收集 simulator.device
+   *（i2c-device / spi-device / env-sensor / oled-device / neopixel-device）；
+   * 网关在 onI2cTxn/onSpiTxn/onDhtTxn/onFbTxn/onNeopixelWrite 时查表回复或定位元件。
    */
   function buildDeviceTables(s: GwSession, circuit: CircuitDoc): void {
     const stmt = db.prepare('SELECT definition_json FROM parts_catalog WHERE type = ?');
@@ -319,7 +340,8 @@ export async function wsGatewayRoutes(
       }
       const dev = def.simulator?.device;
       if (!dev) continue;
-      const d = dev as I2cDeviceSpec | SpiDeviceSpec | DhtDeviceSpec;
+      const d = dev as
+        I2cDeviceSpec | SpiDeviceSpec | DhtDeviceSpec | OledDeviceSpec | NeopixelDeviceSpec;
       if (d.kind === 'i2c-device') {
         s.i2cDevices.set(d.address, d);
       } else if (d.kind === 'spi-device') {
@@ -340,6 +362,19 @@ export async function wsGatewayRoutes(
             ? (part.attrs.humidity as number)
             : (d.defaults?.humidity ?? 50);
         s.dhtDevices.set(gpio, { partId: part.id, temp, humidity });
+      } else if (d.kind === 'oled-device') {
+        /* M9：attrs.i2cAddr（"0x3C"/"0x3D"）覆盖 spec.address */
+        const attr = part.attrs['i2cAddr'];
+        const addr =
+          typeof attr === 'string' && attr.startsWith('0x') ? parseInt(attr, 16) : d.address;
+        s.oledDevices.set(addr, part.id);
+      } else if (d.kind === 'neopixel-device') {
+        /* M9：DIN 信号脚 → 板卡 GPIO 映射（NEOPIXEL_WRITE 帧按 pin 定位元件） */
+        const signalPinName = def.pins?.find((p) => p.role === 'signal.io')?.name;
+        if (!signalPinName) continue;
+        const gpio = resolveGpio(s, part.id, signalPinName);
+        if (gpio === null) continue;
+        s.neopixelPins.set(gpio, part.id);
       }
     }
   }
@@ -645,6 +680,36 @@ export async function wsGatewayRoutes(
               /* 未配置的 pin：回复 0（255.1℃，-1.0%），避免 glue 超时死锁 */
               s.bridge?.sendDhtReply(ev.pin, 0, 0);
             }
+          },
+          /** M9：SSD1306 framebuffer 增量帧 —— 查 oledDevices → fb.update 单向推送 */
+          onFbTxn: (ev) => {
+            const partId = s.oledDevices.get(ev.addr);
+            if (!partId) return; // 电路中无对应 OLED 元件：丢弃（不影响固件）
+            s.fbSeq += 1;
+            send(s, {
+              type: 'fb.update',
+              payload: {
+                partId,
+                rect: [ev.x, ev.y, ev.w, ev.h],
+                data: Array.from(ev.data),
+                seq: s.fbSeq,
+              },
+            });
+          },
+          /** M9：NeoPixel 像素帧 —— 查 neopixelPins → neopixel.write（GRB→RGB 归一） */
+          onNeopixelWrite: (ev) => {
+            const partId = s.neopixelPins.get(ev.pin);
+            if (!partId) return;
+            s.neopixelSeq += 1;
+            const pixels: number[] = [];
+            for (let i = 0; i + 2 < ev.data.length; i += 3) {
+              /* glue 上报 WS2812 原生 GRB 顺序；WS 层统一 RGB（06-§3） */
+              pixels.push(ev.data[i + 1] ?? 0, ev.data[i] ?? 0, ev.data[i + 2] ?? 0);
+            }
+            send(s, {
+              type: 'neopixel.write',
+              payload: { partId, pin: ev.pin, pixels, seq: s.neopixelSeq },
+            });
           },
         });
         gpioSocket.on('close', () => {

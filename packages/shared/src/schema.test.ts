@@ -112,7 +112,11 @@ describe('serverMsgSchema（03-§2.4）', () => {
     { type: 'uart.rx', payload: { bytes: [1, 2, 3] } },
     { type: 'i2c.txn', payload: { addr: 0x3c, dir: 'w', data: [0], seq: 1 } },
     { type: 'spi.txn', payload: { cs: 5, data: [0xff], seq: 2 } },
-    { type: 'fb.update', payload: { partId: 'oled', rect: [0, 0, 8, 8], data: [0xaa] } },
+    { type: 'fb.update', payload: { partId: 'oled', rect: [0, 0, 8, 8], data: [0xaa], seq: 0 } },
+    {
+      type: 'neopixel.write',
+      payload: { partId: 'np', pin: 4, pixels: [0, 255, 0, 255, 0, 0], seq: 1 },
+    },
     { type: 'log', payload: { level: 'info', text: 'hello' } },
     { type: 'error.ack', payload: { code: 'WS_MSG_INVALID', message: 'bad' } },
     {

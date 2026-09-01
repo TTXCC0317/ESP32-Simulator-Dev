@@ -1,0 +1,33 @@
+{
+  "type": "wokwi-ssd1306",
+  "name": "SSD1306 OLED 128x64 (I2C)",
+  "category": "display",
+  "defVersion": 1,
+  "pins": [
+    { "name": "GND", "role": "gnd", "x": 20, "y": 126 },
+    { "name": "VCC", "role": "power", "x": 64, "y": 126 },
+    { "name": "SCL", "role": "i2c.scl", "x": 108, "y": 126 },
+    { "name": "SDA", "role": "i2c.sda", "x": 152, "y": 126 }
+  ],
+  "attrs": [
+    {
+      "key": "i2cAddr",
+      "type": "enum",
+      "label": "I2C 地址",
+      "default": "0x3C",
+      "options": [
+        { "value": "0x3C", "label": "0x3C（默认）" },
+        { "value": "0x3D", "label": "0x3D" }
+      ]
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-ssd1306.svg", "width": 172, "height": 140 },
+  "simulator": {
+    "listens": ["fb.update"],
+    "behavior": "oled-128x64",
+    "device": {
+      "kind": "oled-device",
+      "address": 60
+    }
+  }
+}

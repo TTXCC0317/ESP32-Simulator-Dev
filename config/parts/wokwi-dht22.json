@@ -33,6 +33,10 @@
   "simulator": {
     "listens": [],
     "produces": ["sensor.data"],
-    "behavior": "env-sensor"
+    "behavior": "env-sensor",
+    "device": {
+      "kind": "env-sensor",
+      "defaults": { "temperature": 22, "humidity": 50 }
+    }
   }
 }

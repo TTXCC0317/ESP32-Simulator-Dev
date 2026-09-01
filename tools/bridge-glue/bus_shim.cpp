@@ -31,6 +31,29 @@ static uint8_t s_i2c_rx_buf[I2C_BUFFER_LENGTH];
 static size_t  s_i2c_rx_len = 0;
 static size_t  s_i2c_rx_idx = 0;
 
+/* ---- M9 SSD1306 拦截（实现见文件末尾"SSD1306 I2C 协议级拦截"节） ---- */
+static bool ssd_begin(uint8_t address);   /* 0x3C/0x3D 命中返回 true 并进入 SSD1306 事务 */
+static void ssd_feed(uint8_t b);          /* 事务 payload 逐字节喂入 */
+static void ssd_end_txn(void);            /* 事务结束：冲刷连续段并复位事务态 */
+
+/* ---- M9 SSD1306 拦截静态状态（TwoWire 覆盖与协议实现共用；定义须先于使用点） ---- */
+#define SSD1306_FB_COLS 128u
+#define SSD1306_FB_PAGES 8u
+
+static uint8_t s_ssd_fb[SSD1306_FB_PAGES * SSD1306_FB_COLS];
+static bool s_ssd_txn = false;        /* 当前事务目标是 SSD1306 */
+static uint8_t s_ssd_addr = 0x3C;
+static bool s_ssd_ctrl_seen = false;  /* 本事务已解析控制字节 */
+static bool s_ssd_in_data = false;    /* 控制字节 0x40：后续为 GDDRAM 数据 */
+static uint8_t s_ssd_cmd_expect = 0;  /* 命令流剩余参数字节数（0x21/0x22 各 2 个） */
+static uint8_t s_ssd_cmd = 0;         /* 参数所属命令 */
+static uint8_t s_ssd_col = 0, s_ssd_page = 0;
+static uint8_t s_ssd_col_start = 0, s_ssd_col_end = 127;
+static uint8_t s_ssd_page_start = 0, s_ssd_page_end = 7;
+static bool s_ssd_horiz = false;      /* true=水平寻址（0x21/0x22 设置过），false=页寻址 */
+static uint8_t s_ssd_run_col = 0, s_ssd_run_page = 0;
+static uint16_t s_ssd_run_len = 0;    /* 当前连续段字节数（同页内） */
+
 /* ---- TwoWire 成员函数覆盖（仅声明在 Wire.h 的非 inline 方法） ---- */
 
 bool TwoWire::begin(int sda, int scl, uint32_t frequency) {
@@ -56,15 +79,25 @@ bool TwoWire::setClock(uint32_t freq) {
 void TwoWire::beginTransmission(uint8_t address) {
   s_i2c_addr = address;
   s_i2c_tx_len = 0;
+  /* M9：SSD1306（0x3C/0x3D）→ 协议级拦截，本事务不进传感器 tx 路径 */
+  s_ssd_txn = ssd_begin(address);
 }
 
 size_t TwoWire::write(uint8_t data) {
+  if (s_ssd_txn) {
+    ssd_feed(data);
+    return 1;
+  }
   if (s_i2c_tx_len >= sizeof(s_i2c_tx_buf)) return 0;
   s_i2c_tx_buf[s_i2c_tx_len++] = data;
   return 1;
 }
 
 size_t TwoWire::write(const uint8_t *data, size_t quantity) {
+  if (s_ssd_txn) {
+    for (size_t i = 0; i < quantity; i++) ssd_feed(data[i]);
+    return quantity;
+  }
   size_t wrote = 0;
   for (size_t i = 0; i < quantity; i++) {
     if (s_i2c_tx_len >= sizeof(s_i2c_tx_buf)) break;
@@ -76,6 +109,12 @@ size_t TwoWire::write(const uint8_t *data, size_t quantity) {
 
 uint8_t TwoWire::endTransmission(bool stopBit) {
   (void)stopBit;
+  if (s_ssd_txn) {
+    /* SSD1306 事务：冲刷连续段上报 FB_TXN，不向宿主发 I2C_TXN */
+    ssd_end_txn();
+    s_ssd_txn = false;
+    return 0;
+  }
   uint8_t rbuf[1];
   (void)br_i2c_txn(s_i2c_addr, 0,  // dir=0 写
                    s_i2c_tx_buf, (uint8_t)s_i2c_tx_len, rbuf, 0);
@@ -300,3 +339,163 @@ extern "C" int esp32sim_dht22_read_temp(uint8_t pin, float *out_temp_c) {
 extern "C" int esp32sim_dht22_read_hum(uint8_t pin, float *out_hum_pct) {
   return esp32sim_dht22_read(pin, NULL, out_hum_pct);
 }
+
+/* ---- M9：SSD1306 I2C 协议级拦截（addr 0x3C/0x3D，03-§7.2.2 FB_TXN） ----
+ *
+ * 任何 SSD1306 库（Adafruit/U8g2/ssd1306）最终都走相同 I2C 协议：
+ *   control byte 0x00 + 命令流 / 0x40 + GDDRAM 数据流。
+ * 在 Wire 层拦截即可库无关地维护 framebuffer，替代 mangled-name 覆盖
+ * （M9 规划原方案是覆盖 Adafruit_SSD1306::display()，协议级拦截更稳）。
+ *
+ * 支持命令子集：
+ *   0x21 col_start col_end —— 列地址窗口（水平寻址模式）
+ *   0x22 page_start page_end —— 页地址窗口（水平寻址模式）
+ *   0xB0–0xB7 —— 页地址（页寻址模式）
+ *   0x00–0x0F / 0x10–0x1F —— 列地址低/高半字节（页寻址模式）
+ * 其余命令（0xAE/0xAF/0x8x/0xAx/0xCx/0xDx…）忽略。
+ *
+ * 数据写入：fb[page*128 + col] = byte，游标按寻址模式推进；
+ * 连续段（同页同起始）在段闭合（换页/事务结束）时经 br_fb_txn 上报，
+ * 宿主转 fb.update WS 事件 → 前端 Canvas 渲染（增量、无重组）。
+ */
+
+/* 连续段闭合：fb 段经 FB_TXN 上报（页行 h=8，data 为 w 字节） */
+static void ssd_flush_run(void) {
+  if (s_ssd_run_len == 0) return;
+  /* 页内最大段 128 字节 → payload 5+128=133 ≤ 255 */
+  br_fb_txn(s_ssd_addr, s_ssd_run_col, (uint8_t)(s_ssd_run_page * 8u),
+            (uint8_t)s_ssd_run_len, 8u,
+            &s_ssd_fb[(uint16_t)s_ssd_run_page * SSD1306_FB_COLS + s_ssd_run_col]);
+  s_ssd_run_len = 0;
+}
+
+static void ssd_write_data(uint8_t b) {
+  s_ssd_fb[(uint16_t)s_ssd_page * SSD1306_FB_COLS + s_ssd_col] = b;
+  if (s_ssd_run_len == 0) {
+    s_ssd_run_col = s_ssd_col;
+    s_ssd_run_page = s_ssd_page;
+  }
+  s_ssd_run_len++;
+
+  if (s_ssd_horiz) {
+    /* 水平寻址：列到 col_end 回 col_start、页 +1（到 page_end 回 page_start） */
+    if (s_ssd_col >= s_ssd_col_end) {
+      ssd_flush_run();
+      s_ssd_col = s_ssd_col_start;
+      s_ssd_page =
+          (s_ssd_page >= s_ssd_page_end) ? s_ssd_page_start : (uint8_t)(s_ssd_page + 1u);
+    } else {
+      s_ssd_col++;
+    }
+  } else {
+    /* 页寻址：列到 127 回 0，页不变（页切换由 0xB0 命令显式声明） */
+    if (s_ssd_col >= SSD1306_FB_COLS - 1u) {
+      ssd_flush_run();
+      s_ssd_col = 0;
+    } else {
+      s_ssd_col++;
+    }
+  }
+}
+
+static void ssd_feed_cmd(uint8_t b) {
+  if (s_ssd_cmd_expect > 0) {
+    /* 命令参数字节 */
+    if (s_ssd_cmd == 0x21) {
+      if (s_ssd_cmd_expect == 2) {
+        s_ssd_col_start = b;
+        s_ssd_col = b;
+      } else {
+        s_ssd_col_end = b;
+      }
+    } else if (s_ssd_cmd == 0x22) {
+      if (s_ssd_cmd_expect == 2) {
+        s_ssd_page_start = b;
+        s_ssd_page = b;
+      } else {
+        s_ssd_page_end = b;
+      }
+    }
+    s_ssd_cmd_expect--;
+    if (s_ssd_cmd_expect == 0 && (s_ssd_cmd == 0x21 || s_ssd_cmd == 0x22)) {
+      s_ssd_horiz = true; /* 窗口命令 ⇒ 水平寻址模式 */
+    }
+    return;
+  }
+  /* 命令字节 */
+  if (b == 0x21 || b == 0x22) {
+    s_ssd_cmd = b;
+    s_ssd_cmd_expect = 2;
+  } else if (b >= 0xB0 && b <= 0xB7) {
+    s_ssd_horiz = false;
+    s_ssd_page = (uint8_t)(b - 0xB0u);
+    s_ssd_col = 0; /* 页切换后列地址由后续 0x00–0x1F 命令重建；无则从 0 起 */
+  } else if (b <= 0x0F) {
+    s_ssd_col = (uint8_t)((s_ssd_col & 0xF0u) | b);
+  } else if (b >= 0x10 && b <= 0x1F) {
+    s_ssd_col = (uint8_t)((s_ssd_col & 0x0Fu) | ((b & 0x0Fu) << 4));
+  }
+  /* 其余命令忽略 */
+}
+
+/* SSD1306 事务 payload 逐字节解析（首字节 = 控制字节） */
+static void ssd_feed(uint8_t b) {
+  if (!s_ssd_ctrl_seen) {
+    s_ssd_ctrl_seen = true;
+    if (b == 0x40u) {
+      s_ssd_in_data = true;
+    } else if (b == 0x00u) {
+      s_ssd_in_data = false;
+    } else {
+      /* Co=1 变体（0x80 单命令 / 0xC0 单数据后跟控制字节）——
+       * 主流库不用，简化：0x80 后按命令流处理，其它按命令流处理 */
+      s_ssd_in_data = false;
+      ssd_feed_cmd(b);
+      /* Co=1 语义（单字节命令后再来控制字节）不完整支持：主库不依赖 */
+    }
+    return;
+  }
+  if (s_ssd_in_data) {
+    ssd_write_data(b);
+  } else {
+    ssd_feed_cmd(b);
+  }
+}
+
+/* ---- Wire 拦截点接入：beginTransmission / write / endTransmission 分派 ---- */
+
+static bool ssd_begin(uint8_t address) {
+  if (address != 0x3Cu && address != 0x3Du) return false;
+  s_ssd_txn = true;
+  s_ssd_addr = address;
+  s_ssd_ctrl_seen = false;
+  s_ssd_in_data = false;
+  s_ssd_cmd_expect = 0;
+  s_ssd_run_len = 0;
+  return true;
+}
+
+static void ssd_end_txn(void) {
+  ssd_flush_run();
+  s_ssd_ctrl_seen = false;
+  s_ssd_in_data = false;
+  s_ssd_cmd_expect = 0;
+}
+
+/* ---- M9：Adafruit_NeoPixel::show() 覆盖（__has_include 守卫，库存在才编入） ----
+ *
+ * 固件 #include <Adafruit_NeoPixel.h> 时库加入 include path → __has_include 命中
+ * → 本文件定义的成员函数（先于库 .a 链接 + --allow-multiple-definition）胜出，
+ * 永不进入 ESP32 RMT 路径（QEMU 不模拟 RMT 外设）。库不存在时零依赖。
+ * 亮度：Adafruit_NeoPixel.setBrightness 已在 setPixelColor 时缩放 pixels 缓冲，
+ * show() 原样输出（与真机一致）。br_neopixel_write 内部自带 br_init 惰性初始化。
+ */
+#if __has_include(<Adafruit_NeoPixel.h>)
+#include <Adafruit_NeoPixel.h>
+void Adafruit_NeoPixel::show() {
+  if (numBytes < 3u || pixels == nullptr) return;
+  uint8_t num = (uint8_t)(numBytes / 3u);
+  if (num == 0u) return;
+  br_neopixel_write((uint8_t)getPin(), pixels, num);
+}
+#endif

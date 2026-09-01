@@ -1,4 +1,4 @@
-﻿#ifndef ESP32SIM_BRIDGE_H
+#ifndef ESP32SIM_BRIDGE_H
 #define ESP32SIM_BRIDGE_H
 
 /**
@@ -46,6 +46,22 @@ size_t br_spi_txn(uint8_t cs, const uint8_t *wdata, uint8_t wlen,
  * 返回 1 成功，0 超时/失败
  */
 int br_dht22_txn(uint8_t pin, uint16_t *out_temp_raw, uint16_t *out_hum_raw);
+
+/**
+ * M9：SSD1306 framebuffer 增量帧上报（bus_shim.cpp I2C 协议级拦截内部调用）。
+ * TLV FB_TXN（0x23）帧：payload = addr | x | y | w | h | data[w*h/8]
+ * SSD1306 页行写入 h=8、data 为 w 字节页位图（每字节 8 个垂直像素，LSB=上）。
+ * 单向推送（fire-and-forget），宿主不回复。
+ */
+void br_fb_txn(uint8_t addr, uint8_t x, uint8_t y, uint8_t w, uint8_t h,
+               const uint8_t *data);
+
+/**
+ * M9：NeoPixel WS2812 RGB 像素帧上报（Adafruit_NeoPixel::show() 覆盖内部调用）。
+ * TLV NEOPIXEL_WRITE（0x24）帧：payload = pin | num | data[num*3]（GRB 顺序）
+ * num 钳位 ≤84（TLV len ≤255：2+num*3 ≤ 255）；单向推送，宿主不回复。
+ */
+void br_neopixel_write(uint8_t pin, const uint8_t *grb, uint8_t num);
 
 #ifdef __cplusplus
 }

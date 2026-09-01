@@ -5,6 +5,7 @@ import bh1750Json from '../../../../config/parts/wokwi-bh1750.json';
 import buzzerJson from '../../../../config/parts/wokwi-buzzer.json';
 import dht22Json from '../../../../config/parts/wokwi-dht22.json';
 import ledJson from '../../../../config/parts/wokwi-led.json';
+import ledStripJson from '../../../../config/parts/wokwi-led-strip.json';
 import mpu6050Json from '../../../../config/parts/wokwi-mpu6050.json';
 import potentiometerJson from '../../../../config/parts/wokwi-potentiometer.json';
 import pushbuttonJson from '../../../../config/parts/wokwi-pushbutton.json';
@@ -12,6 +13,7 @@ import resistorJson from '../../../../config/parts/wokwi-resistor.json';
 import rgbLedJson from '../../../../config/parts/wokwi-rgb-led.json';
 import servoJson from '../../../../config/parts/wokwi-servo.json';
 import slideSwitchJson from '../../../../config/parts/wokwi-slide-switch.json';
+import ssd1306Json from '../../../../config/parts/wokwi-ssd1306.json';
 import w25q32Json from '../../../../config/parts/wokwi-w25q32.json';
 
 /**
@@ -36,6 +38,8 @@ const SOURCES = [
   mpu6050Json,
   w25q32Json,
   dht22Json,
+  ssd1306Json,
+  ledStripJson,
 ] as const;
 
 /** zod 校验（配置为边界输入，校验失败 fail-fast——配置错误应在开发期暴露） */

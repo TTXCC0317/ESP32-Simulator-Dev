@@ -58,7 +58,7 @@ async function createProject(
 }
 
 describe('catalog 只读端点（01-§5.2）', () => {
-  it('GET /api/parts 返回全部元件且带引脚定义（P1 8 类 + M8 I2C/SPI 设备）', async () => {
+  it('GET /api/parts 返回全部元件且带引脚定义（P1 8 类 + M8 I2C/SPI 设备 + M9 SSD1306/NeoPixel）', async () => {
     const { app } = await buildTestApp();
     const res = await app.inject({ method: 'GET', url: '/api/parts' });
     expect(res.statusCode).toBe(200);
@@ -69,6 +69,7 @@ describe('catalog 只读端点（01-§5.2）', () => {
       'wokwi-buzzer',
       'wokwi-dht22',
       'wokwi-led',
+      'wokwi-led-strip',
       'wokwi-mpu6050',
       'wokwi-potentiometer',
       'wokwi-pushbutton',
@@ -76,6 +77,7 @@ describe('catalog 只读端点（01-§5.2）', () => {
       'wokwi-rgb-led',
       'wokwi-servo',
       'wokwi-slide-switch',
+      'wokwi-ssd1306',
       'wokwi-w25q32',
     ]);
     for (const p of parts) expect(p.pins.length, p.type).toBeGreaterThan(0);

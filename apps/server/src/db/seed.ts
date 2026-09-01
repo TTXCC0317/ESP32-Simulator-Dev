@@ -544,6 +544,210 @@ const DHT22_BASIC_MANIFEST: ExampleManifest = {
   ],
 };
 
+/**
+ * oled-hello 示例（M9 SSD1306 OLED 显示）：
+ * - main.py（引擎A）：framebuf shim 待 M9 阶段2 wasm 重建；回退硬编码打印
+ * - main.ino（引擎B）：裸 Wire 直驱 SSD1306（页寻址协议），bus_shim 协议级拦截
+ *   0x3C 事务 → 维护 framebuffer → FB_TXN 帧上报 → 前端 Canvas 渲染。
+ *   绘制 "HELLO"（5x7 列字模，页 3 居中），串口打印 "OLED: HELLO" 对齐双引擎断言。
+ */
+const OLED_HELLO_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 60, top: 60, rotate: 0, attrs: {} },
+    { id: 'oled1', type: 'wokwi-ssd1306', left: 420, top: 120, rotate: 0, attrs: {} },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO21', target: 'oled1:SDA', color: 'green', path: [] },
+    { id: 'w2', source: 'esp:GPIO22', target: 'oled1:SCL', color: 'orange', path: [] },
+    { id: 'w3', source: 'oled1:VCC', target: 'esp:3V3', color: 'red', path: [] },
+    { id: 'w4', source: 'oled1:GND', target: 'esp:GND.1', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const OLED_HELLO_MANIFEST: ExampleManifest = {
+  description: 'SSD1306 OLED 显示 "HELLO"（I2C 0x3C）：M9 双引擎',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'qemu-remote',
+  diagram: OLED_HELLO_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        '# 引擎A machine.framebuf shim 待 M9 阶段2 wasm 重建；回退硬编码打印与引擎B对齐',
+        'import time',
+        '',
+        'while True:',
+        '    print("OLED: HELLO")',
+        '    time.sleep(2)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        '// SSD1306 128x64 裸 Wire 直驱（页寻址）；bus_shim 拦截 0x3C 事务维护 FB 并上报',
+        '#include <Wire.h>',
+        '',
+        '#define SSD_ADDR 0x3C',
+        '',
+        '// "HELLO" 5x7 列字模（每字节一列，bit0=顶部；行 0-6）',
+        'const uint8_t G_H[5] = {0x7F, 0x08, 0x08, 0x08, 0x7F};',
+        'const uint8_t G_E[5] = {0x7F, 0x49, 0x49, 0x49, 0x7F};',
+        'const uint8_t G_L[5] = {0x7F, 0x40, 0x40, 0x40, 0x7F};',
+        'const uint8_t G_O[5] = {0x3E, 0x41, 0x41, 0x41, 0x3E};',
+        'const uint8_t *GLYPHS[5] = {G_H, G_E, G_L, G_L, G_O};',
+        '',
+        '// 命令流写入（control=0x00）',
+        'static void ssd_cmd(const uint8_t *c, uint8_t n) {',
+        '  Wire.beginTransmission(SSD_ADDR);',
+        '  Wire.write(0x00);',
+        '  for (uint8_t i = 0; i < n; i++) Wire.write(c[i]);',
+        '  Wire.endTransmission();',
+        '}',
+        '',
+        '// GDDRAM 数据写入（control=0x40）',
+        'static void ssd_data(const uint8_t *d, uint8_t n) {',
+        '  Wire.beginTransmission(SSD_ADDR);',
+        '  Wire.write(0x40);',
+        '  for (uint8_t i = 0; i < n; i++) Wire.write(d[i]);',
+        '  Wire.endTransmission();',
+        '}',
+        '',
+        '// 页寻址光标：页 + 列（低/高半字节命令）',
+        'static void ssd_cursor(uint8_t page, uint8_t col) {',
+        '  uint8_t c[3] = { (uint8_t)(0xB0 | page), (uint8_t)(0x00 | (col & 0x0F)),',
+        '                   (uint8_t)(0x10 | (col >> 4)) };',
+        '  ssd_cmd(c, 3);',
+        '}',
+        '',
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '  Wire.begin(21, 22, 100000);',
+        '  const uint8_t init[] = {',
+        '    0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0x8D, 0x14,',
+        '    0x20, 0x02, 0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1,',
+        '    0xDB, 0x40, 0xA4, 0xA6, 0xAF,',
+        '  };',
+        '  ssd_cmd(init, sizeof(init));',
+        '',
+        '  // "HELLO"：页 3、起始列 49（(128-29)/2），字模列 + 1 列间隔',
+        '  uint8_t col = 49;',
+        '  for (uint8_t g = 0; g < 5; g++) {',
+        '    ssd_cursor(3, col);',
+        '    ssd_data(GLYPHS[g], 5);',
+        '    const uint8_t gap[1] = {0x00};',
+        '    ssd_cursor(3, col + 5);',
+        '    ssd_data(gap, 1);',
+        '    col += 6;',
+        '  }',
+        '}',
+        '',
+        'void loop() {',
+        '  Serial.println("OLED: HELLO");',
+        '  delay(2000);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
+/**
+ * neopixel-rainbow 示例（M9 WS2812 彩虹流）：
+ * - main.py（引擎A）：machine.NeoPixel shim 待 M9 阶段2；回退硬编码打印
+ * - main.ino（引擎B）：直接调 glue br_neopixel_write（GRB 8 珠彩虹帧），
+ *   不依赖 Adafruit_NeoPixel 库（用户目录未装库，__has_include 路径零依赖）；
+ *   8 珠 @ GPIO4，hue 递增 8/帧、120ms/帧 → durationMs 窗口内 writes ≥3 稳定满足。
+ *   彩虹为连续动画，末帧随调度时序变化 → golden 只断言 minWrites（末帧哈希不做）。
+ */
+const NEOPIXEL_RAINBOW_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 60, top: 60, rotate: 0, attrs: {} },
+    { id: 'np1', type: 'wokwi-led-strip', left: 420, top: 120, rotate: 0, attrs: {} },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO4', target: 'np1:DIN', color: 'green', path: [] },
+    { id: 'w2', source: 'np1:VCC', target: 'esp:5V', color: 'red', path: [] },
+    { id: 'w3', source: 'np1:GND', target: 'esp:GND.1', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const NEOPIXEL_RAINBOW_MANIFEST: ExampleManifest = {
+  description: 'NeoPixel WS2812 8 珠彩虹流（GPIO4）：M9 双引擎',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'qemu-remote',
+  diagram: NEOPIXEL_RAINBOW_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        '# 引擎A machine.NeoPixel shim 待 M9 阶段2 wasm 重建；回退硬编码打印与引擎B对齐',
+        'import time',
+        '',
+        'hue = 0',
+        'while True:',
+        '    print(f"NP: HUE {hue}")',
+        '    hue = (hue + 8) % 256',
+        '    time.sleep(0.12)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        '// WS2812 8 珠彩虹流：直接调 glue br_neopixel_write（GRB 帧 → NEOPIXEL_WRITE TLV）',
+        '#include <Arduino.h>',
+        '#include "esp32sim_bridge.h"',
+        '',
+        '#define NP_PIN 4',
+        '#define NP_NUM 8',
+        '',
+        '// 8-bit HSV→RGB（S=V=255），h 每珠递增 32（8 珠一轮全色环）',
+        'static void rainbowColor(uint8_t h, uint8_t *r, uint8_t *g, uint8_t *b) {',
+        '  uint8_t s = h / 43;',
+        '  uint8_t f = (h - s * 43) * 6;',
+        '  switch (s) {',
+        '    case 0:  *r = 255;     *g = f;        *b = 0;        break;',
+        '    case 1:  *r = 255 - f; *g = 255;      *b = 0;        break;',
+        '    case 2:  *r = 0;       *g = 255;      *b = f;        break;',
+        '    case 3:  *r = 0;       *g = 255 - f;  *b = 255;      break;',
+        '    case 4:  *r = f;       *g = 0;        *b = 255;      break;',
+        '    default: *r = 255;     *g = 0;        *b = 255 - f;  break;',
+        '  }',
+        '}',
+        '',
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '}',
+        '',
+        'static uint8_t hue = 0;',
+        '',
+        'void loop() {',
+        '  uint8_t grb[NP_NUM * 3];',
+        '  for (uint8_t i = 0; i < NP_NUM; i++) {',
+        '    uint8_t r, g, b;',
+        '    rainbowColor((uint8_t)(hue + i * 32), &r, &g, &b);',
+        '    grb[i * 3 + 0] = g;',
+        '    grb[i * 3 + 1] = r;',
+        '    grb[i * 3 + 2] = b;',
+        '  }',
+        '  br_neopixel_write(NP_PIN, grb, NP_NUM);',
+        '  Serial.printf("NP: HUE %u\\n", hue);',
+        '  hue = (uint8_t)(hue + 8);',
+        '  delay(120);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
 const BUILT_IN_EXAMPLES: Array<{
   id: string;
   name: string;
@@ -586,6 +790,18 @@ const BUILT_IN_EXAMPLES: Array<{
     name: 'dht22-basic（DHT22 温湿度打印）',
     category: 'peripheral',
     manifest: DHT22_BASIC_MANIFEST,
+  },
+  {
+    id: 'oled-hello',
+    name: 'oled-hello（SSD1306 OLED 显示）',
+    category: 'display',
+    manifest: OLED_HELLO_MANIFEST,
+  },
+  {
+    id: 'neopixel-rainbow',
+    name: 'neopixel-rainbow（WS2812 彩虹流）',
+    category: 'display',
+    manifest: NEOPIXEL_RAINBOW_MANIFEST,
   },
 ];
 

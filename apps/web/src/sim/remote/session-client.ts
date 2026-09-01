@@ -246,6 +246,12 @@ export class RemoteSessionClient implements SimulationEngine {
       case 'fb.update':
         this.emit('fb.update', { ...msg.payload, data: new Uint8Array(msg.payload.data) });
         break;
+      case 'neopixel.write': {
+        // seq 仅诊断用，引擎事件层不携带（EngineEventMap 对齐）
+        const { seq: _seq, ...rest } = msg.payload;
+        this.emit('neopixel.write', { ...rest, pixels: new Uint8Array(rest.pixels) });
+        break;
+      }
       case 'log':
         // QEMU/宿主错误聚合到问题面板（04-§9）
         if (msg.payload.level === 'error') {

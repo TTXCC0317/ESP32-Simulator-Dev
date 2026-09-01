@@ -34,6 +34,7 @@ for (const type of [
   'i2c.txn',
   'spi.txn',
   'fb.update',
+  'neopixel.write',
 ] as const) {
   engine.on(type, (payload) => {
     batch.push({ kind: type, ...payload } as EngineEvent);

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 172 140" width="172" height="140">
+  <!-- SSD1306 OLED 128x64 I2C 模块（05-§2.5） -->
+  <rect x="1" y="1" width="170" height="124" rx="6" fill="var(--panel, #1a1d24)" stroke="var(--panel-border, #3a3f4a)" stroke-width="2"/>
+  <!-- 屏幕 128x64：画布坐标 (22,10)-(150,74)，由 PartLayer 运行时 Image 覆盖 -->
+  <rect x="20" y="8" width="132" height="68" rx="2" fill="#051018" stroke="#0a2030" stroke-width="1"/>
+  <!-- 引脚焊盘（坐标与 §2.5 表一致） -->
+  <rect x="14" y="125" width="12" height="10" fill="#c9a227"/>
+  <rect x="58" y="125" width="12" height="10" fill="#c9a227"/>
+  <rect x="102" y="125" width="12" height="10" fill="#c9a227"/>
+  <rect x="146" y="125" width="12" height="10" fill="#c9a227"/>
+  <text x="20" y="137" font-size="8" fill="#8b93a3" text-anchor="middle">GND</text>
+  <text x="64" y="137" font-size="8" fill="#8b93a3" text-anchor="middle">VCC</text>
+  <text x="108" y="137" font-size="8" fill="#8b93a3" text-anchor="middle">SCL</text>
+  <text x="152" y="137" font-size="8" fill="#8b93a3" text-anchor="middle">SDA</text>
+  <text x="86" y="102" font-size="9" fill="#8b93a3" text-anchor="middle">SSD1306</text>
+</svg>

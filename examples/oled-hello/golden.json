@@ -1,0 +1,14 @@
+{
+  "exampleId": "oled-hello",
+  "durationMs": 4000,
+  "input": [],
+  "expect": {
+    "serialContainsAll": ["OLED: HELLO"],
+    "fb": [
+      {
+        "partId": "oled1",
+        "hash": "c378347ffb3bb1a41db9df616416ee1b272edbf6c63f5cfbf1111e8fb6dddd3e"
+      }
+    ]
+  }
+}

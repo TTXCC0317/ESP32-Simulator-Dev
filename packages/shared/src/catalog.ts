@@ -98,7 +98,29 @@ export interface DhtDeviceSpec {
   defaults: { temperature: number; humidity: number };
 }
 
-export type DeviceSpec = I2cDeviceSpec | SpiDeviceSpec | DhtDeviceSpec;
+/**
+ * M9：SSD1306 OLED 设备语义（behavior='oled-128x64'）。
+ * 固件 I2C 写（0x3C/0x3D）由 glue 协议级拦截维护 framebuffer，经 FB_TXN 帧上报；
+ * 宿主按 address 路由 partId → fb.update 推送前端渲染。
+ */
+export interface OledDeviceSpec {
+  kind: 'oled-device';
+  /** 7-bit I2C 地址（默认 0x3C=60；attrs.i2cAddr 可覆盖） */
+  address: number;
+}
+
+/**
+ * M9：NeoPixel WS2812 灯带设备语义（behavior='neopixel'）。
+ * pinGpio 由 ws-gateway buildDeviceTables 运行时从 role='signal.io'（DIN）连接解析；
+ * 灯珠数以 part.attrs.pixels 为准（defaults 仅缺省兜底）。
+ */
+export interface NeopixelDeviceSpec {
+  kind: 'neopixel-device';
+  defaults?: { pixels?: number; brightness?: number };
+}
+
+export type DeviceSpec =
+  I2cDeviceSpec | SpiDeviceSpec | DhtDeviceSpec | OledDeviceSpec | NeopixelDeviceSpec;
 
 export interface PartDefinition {
   type: string;
@@ -215,9 +237,35 @@ export const spiDeviceSpecSchema = z.object({
   registers: z.array(i2cRegisterSpecSchema).optional(),
 });
 
+export const dhtDeviceSpecSchema = z.object({
+  kind: z.literal('env-sensor'),
+  defaults: z.object({
+    temperature: z.number(),
+    humidity: z.number(),
+  }),
+});
+
+export const oledDeviceSpecSchema = z.object({
+  kind: z.literal('oled-device'),
+  address: z.number().int().min(0).max(0x7f),
+});
+
+export const neopixelDeviceSpecSchema = z.object({
+  kind: z.literal('neopixel-device'),
+  defaults: z
+    .object({
+      pixels: z.number().int().min(1).max(84).optional(),
+      brightness: z.number().int().min(0).max(255).optional(),
+    })
+    .optional(),
+});
+
 export const deviceSpecSchema = z.discriminatedUnion('kind', [
   i2cDeviceSpecSchema,
   spiDeviceSpecSchema,
+  dhtDeviceSpecSchema,
+  oledDeviceSpecSchema,
+  neopixelDeviceSpecSchema,
 ]);
 
 export const partCategorySchema = z.enum(['mcu', 'io', 'sensor', 'display', 'power']);

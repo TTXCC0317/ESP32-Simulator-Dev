@@ -19,6 +19,10 @@ import type net from 'node:net';
  *   0x30 SENSOR_REPLY 宿主→固件（payload: addr | len | data[]，I2C 读应答）
  *   0x31 SPI_REPLY    宿主→固件（payload: cs | len | data[]，SPI 应答）
  *
+ * M9 单向推送帧（固件→宿主，无回复）：
+ *   0x23 FB_TXN         payload: addr | x | y | w | h | data[w*h/8]（SSD1306 页位图）
+ *   0x24 NEOPIXEL_WRITE payload: pin | num | data[num*3]（GRB 顺序，≤84 灯）
+ *
  * 状态机按 type 首字节分支：type < TLV_THRESHOLD 走定长解析，≥ TLV_THRESHOLD 走变长解析。
  * 坏帧（magic/校验不符）静默丢弃并重同步；分包/粘包由状态机处理。
  * 帧协议与 tools/bridge-glue/esp32sim_bridge.c + bus_shim.cpp 保持一致（文档同步见 03-§7.2.2）。
@@ -41,6 +45,10 @@ export const I2C_TXN = 0x20;
 export const SPI_TXN = 0x21;
 /** M8 后续：DHT22 单总线请求（payload: pin 1 byte） */
 export const DHT22_TXN = 0x22;
+/** M9：SSD1306 framebuffer 增量帧（payload: addr | x | y | w | h | data[w*h/8]，单向） */
+export const FB_TXN = 0x23;
+/** M9：NeoPixel 像素帧（payload: pin | num | data[num*3] GRB 顺序，单向） */
+export const NEOPIXEL_WRITE = 0x24;
 export const SENSOR_REPLY = 0x30;
 export const SPI_REPLY = 0x31;
 /** M8 后续：DHT22 回复（payload: pin | tempRaw_hi | tempRaw_lo | humRaw_hi | humRaw_lo） */
@@ -95,6 +103,22 @@ export interface DhtTxnEvent {
   pin: number;
 }
 
+/** M9：SSD1306 framebuffer 增量事件（FB_TXN 帧；SSD1306 页位图，每字节 8 个垂直像素 LSB=上） */
+export interface FbTxnEvent {
+  addr: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  data: Uint8Array;
+}
+
+/** M9：NeoPixel 像素事件（NEOPIXEL_WRITE 帧；GRB 顺序原始字节） */
+export interface NeopixelTxnEvent {
+  pin: number;
+  data: Uint8Array;
+}
+
 export interface GpioBridgeCallbacks {
   /** 固件写 GPIO（0x01） */
   onGpioWrite: (pin: number, level: 0 | 1) => void;
@@ -110,6 +134,10 @@ export interface GpioBridgeCallbacks {
   onSpiTxn?: (ev: SpiTxnEvent) => void;
   /** M8 后续：固件 DHT22 请求（0x22；可选，未注册则丢弃） */
   onDhtTxn?: (ev: DhtTxnEvent) => void;
+  /** M9：固件 SSD1306 framebuffer 增量（0x23；可选，未注册则丢弃） */
+  onFbTxn?: (ev: FbTxnEvent) => void;
+  /** M9：固件 NeoPixel 像素帧（0x24；可选，未注册则丢弃） */
+  onNeopixelWrite?: (ev: NeopixelTxnEvent) => void;
 }
 
 /** 帧装配阶段 */
@@ -297,6 +325,23 @@ export class QemuGpioBridge {
       if (payload.length < 1) return;
       const pin = payload[0] ?? 0;
       this.cb.onDhtTxn?.({ pin });
+    } else if (type === FB_TXN) {
+      // payload: addr | x | y | w | h | data[w*h/8]
+      if (payload.length < 5) return;
+      const addr = payload[0] ?? 0;
+      const x = payload[1] ?? 0;
+      const y = payload[2] ?? 0;
+      const w = payload[3] ?? 0;
+      const h = payload[4] ?? 0;
+      const data = Uint8Array.from(payload.slice(5, 5 + Math.floor((w * h) / 8)));
+      this.cb.onFbTxn?.({ addr, x, y, w, h, data });
+    } else if (type === NEOPIXEL_WRITE) {
+      // payload: pin | num | data[num*3]（GRB 顺序）
+      if (payload.length < 2) return;
+      const pin = payload[0] ?? 0;
+      const num = payload[1] ?? 0;
+      const data = Uint8Array.from(payload.slice(2, 2 + num * 3));
+      this.cb.onNeopixelWrite?.({ pin, data });
     }
   }
 }

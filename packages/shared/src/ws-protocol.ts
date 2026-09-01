@@ -153,6 +153,7 @@ export const fbUpdateSchema = z.object({
     partId: z.string().min(1),
     rect: z.tuple([z.number(), z.number(), z.number(), z.number()]),
     data: z.array(z.number().int().min(0).max(255)),
+    seq: z.number().int().nonnegative(),
   }),
 });
 
@@ -164,6 +165,7 @@ export const neopixelWriteSchema = z.object({
     pin: z.number().int().min(0).max(255),
     /** RGB 像素数组，长度必须是 3×numPixels（06-§3 单帧 ≤768B = 256 灯 × 3B） */
     pixels: z.array(z.number().int().min(0).max(255)).max(768),
+    seq: z.number().int().nonnegative(),
   }),
 });
 

@@ -1,0 +1,45 @@
+{
+  "type": "wokwi-led-strip",
+  "name": "NeoPixel LED 灯带 (WS2812)",
+  "category": "display",
+  "defVersion": 1,
+  "pins": [
+    { "name": "VCC", "role": "power", "x": 6, "y": 12 },
+    { "name": "DIN", "role": "signal.io", "x": 6, "y": 20 },
+    { "name": "GND", "role": "gnd", "x": 6, "y": 28 }
+  ],
+  "attrs": [
+    {
+      "key": "pixels",
+      "type": "enum",
+      "label": "灯珠数量",
+      "default": "8",
+      "options": [
+        { "value": "1", "label": "1" },
+        { "value": "4", "label": "4" },
+        { "value": "8", "label": "8" },
+        { "value": "16", "label": "16" },
+        { "value": "30", "label": "30" },
+        { "value": "64", "label": "64" }
+      ]
+    },
+    {
+      "key": "brightness",
+      "type": "number",
+      "label": "亮度 (0-255)",
+      "default": 128,
+      "min": 0,
+      "max": 255,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-led-strip.svg", "width": 128, "height": 128 },
+  "simulator": {
+    "listens": ["neopixel.write"],
+    "behavior": "neopixel",
+    "device": {
+      "kind": "neopixel-device",
+      "defaults": { "pixels": 8, "brightness": 128 }
+    }
+  }
+}

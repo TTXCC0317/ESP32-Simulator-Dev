@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { PartDefinition, PartInstance, PinRef } from '@esp32-sim/shared';
-import { Circle, Ellipse, Group, Line, Rect, Text } from 'react-konva';
+import { Circle, Ellipse, Group, Image, Line, Rect, Text } from 'react-konva';
+import type Konva from 'konva';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import { useCircuitStore } from '../circuit/circuitStore';
 import { P1_CATALOG } from '../circuit/catalog-data';
 import { useSimStore } from '../stores/sim';
-import { useRuntimeStore } from '../stores/runtime';
+import { useRuntimeStore, SSD1306_COLS } from '../stores/runtime';
 import { useUiStore } from '../stores/ui';
 import { startBuzzer, stopBuzzer } from '../audio/buzzer';
 import {
@@ -58,6 +59,12 @@ interface RuntimeVisual {
   servoAngle: number;
   /** 电位器未接电源 → 画警告边框 */
   potWarn: boolean;
+  /** M9 SSD1306 运行时帧画布（128×64 ImageData；null=非 OLED） */
+  oledCanvas: HTMLCanvasElement | null;
+  /** Konva Image 节点引用（putImageData 后手动 batchDraw，画布内容变化不触发 Konva 重绘） */
+  oledImgRef: React.RefObject<Konva.Image | null> | null;
+  /** M9 NeoPixel 各灯珠颜色（rgb() 字符串；灭=rgb(0,0,0)） */
+  stripColors: string[];
 }
 
 interface PartViewProps {
@@ -614,6 +621,107 @@ function bodyShape(part: PartInstance, def: PartDefinition, rt: RuntimeVisual) {
         </Fragment>
       );
     }
+    case 'wokwi-ssd1306': {
+      /* 屏幕布局与 wokwi-ssd1306.svg 对齐：外屏 (20,8) 132×68，有效像素 (22,10) 128×64 */
+      return (
+        <Fragment>
+          <Rect
+            width={w}
+            height={h}
+            cornerRadius={6}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          <Rect
+            x={20}
+            y={8}
+            width={132}
+            height={68}
+            cornerRadius={2}
+            fill="#051018"
+            stroke="#0a2030"
+            strokeWidth={1}
+            listening={false}
+          />
+          {rt.oledCanvas && (
+            <Image
+              ref={(rt.oledImgRef ?? undefined) as React.Ref<Konva.Image> | undefined}
+              x={22}
+              y={10}
+              width={128}
+              height={64}
+              image={rt.oledCanvas}
+              listening={false}
+            />
+          )}
+          <Text
+            x={0}
+            y={92}
+            width={w}
+            text="SSD1306"
+            align="center"
+            fontSize={9}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
+    case 'wokwi-led-strip': {
+      /* 灯珠网格布局（≤8 单行 / ≤16 两行 / ≤30 三行 / 其余四行），颜色来自 neopixelFrames */
+      const n = rt.stripColors.length;
+      const rows = n <= 8 ? 1 : n <= 16 ? 2 : n <= 30 ? 3 : 4;
+      const cols = Math.max(1, Math.ceil(n / rows));
+      const x0 = 34;
+      const x1 = 122;
+      const yTop = 20;
+      const yBot = 106;
+      const dx = cols > 1 ? (x1 - x0) / (cols - 1) : 0;
+      const dy = rows > 1 ? (yBot - yTop) / (rows - 1) : 0;
+      const r = Math.max(2.5, Math.min(7, Math.min(dx || 88, dy || 88) / 2 - 0.6));
+      return (
+        <Fragment>
+          <Rect
+            width={w}
+            height={h}
+            cornerRadius={8}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          <Rect x={1} y={1} width={20} height={h - 2} cornerRadius={8} fill="#262b35" />
+          {rt.stripColors.map((c, i) => {
+            const rowIdx = Math.floor(i / cols);
+            const colIdx = i % cols;
+            const px = cols > 1 ? x0 + colIdx * dx : (x0 + x1) / 2;
+            const py = rows > 1 ? yTop + rowIdx * dy : (yTop + yBot) / 2;
+            return (
+              <Circle
+                key={i}
+                x={px}
+                y={py}
+                radius={r}
+                fill={c}
+                stroke="#3a3f4a"
+                strokeWidth={0.8}
+                listening={false}
+              />
+            );
+          })}
+          <Text
+            x={28}
+            y={h - 10}
+            width={w - 30}
+            text="WS2812"
+            align="center"
+            fontSize={8}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
     default:
       return <Rect width={w} height={h} fill={PART_BODY} stroke={PART_STROKE} strokeWidth={2} />;
   }
@@ -754,6 +862,58 @@ export function PartView(props: PartViewProps) {
     return Math.max(0, Math.min(180, deg));
   }, [def.type, servoPwm, initialAngle]);
 
+  // M9 SSD1306：fbFrames 位图 → offscreen canvas ImageData → Konva Image（batchDraw）
+  const isOled = def.type === 'wokwi-ssd1306';
+  const oledFb = useRuntimeStore((s) => (isOled ? (s.fbFrames.get(part.id) ?? null) : null));
+  const oledCanvas = useMemo(() => {
+    if (!isOled) return null;
+    const c = document.createElement('canvas');
+    c.width = SSD1306_COLS;
+    c.height = 64;
+    return c;
+  }, [isOled]);
+  const oledImgRef = useRef<Konva.Image | null>(null);
+  useEffect(() => {
+    if (!isOled || !oledCanvas) return;
+    const ctx = oledCanvas.getContext('2d');
+    if (!ctx) return;
+    const img = ctx.createImageData(SSD1306_COLS, 64);
+    for (let page = 0; page < 8; page++) {
+      for (let col = 0; col < SSD1306_COLS; col++) {
+        const byte = oledFb ? (oledFb[page * SSD1306_COLS + col] ?? 0) : 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const on = (byte >> bit) & 1;
+          const idx = ((page * 8 + bit) * SSD1306_COLS + col) * 4;
+          /* 亮 = SSD1306 白蓝色；灭 = 透明（露出暗底） */
+          img.data[idx] = 224;
+          img.data[idx + 1] = 232;
+          img.data[idx + 2] = 240;
+          img.data[idx + 3] = on ? 255 : 0;
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    oledImgRef.current?.getLayer()?.batchDraw();
+  }, [isOled, oledCanvas, oledFb]);
+
+  // M9 NeoPixel 灯带：neopixelFrames RGB 字节 → 灯珠颜色（灭 = rgb(0,0,0)）
+  const isStrip = def.type === 'wokwi-led-strip';
+  const pixelCount = Math.max(1, Math.round(Number(part.attrs['pixels'] ?? 8) || 8));
+  const stripPixels = useRuntimeStore((s) =>
+    isStrip ? (s.neopixelFrames.get(part.id) ?? null) : null,
+  );
+  const stripColors = useMemo(() => {
+    if (!isStrip) return [];
+    const out: string[] = [];
+    for (let i = 0; i < pixelCount; i++) {
+      const r = stripPixels?.[i * 3] ?? 0;
+      const g = stripPixels?.[i * 3 + 1] ?? 0;
+      const b = stripPixels?.[i * 3 + 2] ?? 0;
+      out.push(`rgb(${r},${g},${b})`);
+    }
+    return out;
+  }, [isStrip, stripPixels, pixelCount]);
+
   // 按键/开关交互（运行中点击 → 注入；空闲 → 选择/移动）
   const interaction =
     def.type === 'wokwi-pushbutton'
@@ -811,6 +971,9 @@ export function PartView(props: PartViewProps) {
     potentiometerAngle,
     servoAngle,
     potWarn: def.type === 'wokwi-potentiometer' && runtimeActive && !potPowered,
+    oledCanvas: isOled ? oledCanvas : null,
+    oledImgRef: isOled ? oledImgRef : null,
+    stripColors,
   };
 
   return (

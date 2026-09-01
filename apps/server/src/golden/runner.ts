@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -7,9 +8,17 @@ import { seedExamples } from '../db/seed';
 import { createProject } from '../services/projects.service';
 import { BuildService, type BuildRunner } from '../services/build.service';
 import { pullOfMode, QemuGpioBridge } from '../services/gpio.bridge';
+import { importCatalog, loadCatalog } from '../services/catalog.service';
+import { appRoot } from '../utils/app-root';
 import { QemuManager, type SpawnQemuFn } from '../services/qemu.manager';
 import type { GoldenI2cTxn, GoldenResult, GoldenScript } from './golden-schema';
-import type { CircuitDoc, DhtDeviceSpec, I2cDeviceSpec } from '@esp32-sim/shared';
+import type {
+  CircuitDoc,
+  DhtDeviceSpec,
+  I2cDeviceSpec,
+  NeopixelDeviceSpec,
+  OledDeviceSpec,
+} from '@esp32-sim/shared';
 
 /**
  * Golden 运行器 v2（02-§3.2/§4 M5：输入序列注入 ×2引擎 + GPIO 输出断言 ×2引擎）
@@ -280,6 +289,14 @@ export async function runGoldenEngineA(
   if (script.expect.sensor !== undefined) {
     sensorSkipNote = `；[sensor skip: engine A shim not implemented]`;
   }
+  let fbSkipNote = '';
+  if (script.expect.fb !== undefined) {
+    fbSkipNote = `；[fb skip: engine A shim not implemented]`;
+  }
+  let neopixelSkipNote = '';
+  if (script.expect.neopixel !== undefined) {
+    neopixelSkipNote = `；[neopixel skip: engine A shim not implemented]`;
+  }
   const serialErrors: string[] = [];
   if (!serialCycleOk && script.expect.serialCycle) {
     serialErrors.push(`串口输出未出现「${script.expect.serialCycle.join('→')}」完整 2 轮`);
@@ -298,9 +315,11 @@ export async function runGoldenEngineA(
     gpio: gpioActual,
     i2cTxns: [],
     sensorActual: [],
+    fbActual: [],
+    neopixelActual: [],
     error: ok
       ? undefined
-      : `${serialErrors.join('；')}${gpioDetail}${i2cSkipNote}${sensorSkipNote}`,
+      : `${serialErrors.join('；')}${gpioDetail}${i2cSkipNote}${sensorSkipNote}${fbSkipNote}${neopixelSkipNote}`,
   };
 }
 
@@ -340,6 +359,10 @@ export async function runGoldenEngineB(
 
   // 1) seed + 从示例 manifest 实例化临时工程（01-§6.1）
   seedExamples(db);
+  // catalog 导入（幂等）：M8/M9 设备表（i2cDevices/oledDevices/neopixelPins…）与
+  // board_pinmaps（resolveGpio）都读 parts_catalog——CLI/探针内存库不走 app.ts 启动流程，
+  // 不导入则设备表恒空、FB/NeoPixel 帧被静默丢弃（M9 探针实测 fb collected=0）。
+  importCatalog(db, loadCatalog(join(appRoot(), 'config')));
   let projectId: string;
   let boardType: string;
   try {
@@ -354,8 +377,11 @@ export async function runGoldenEngineB(
   }
 
   // M8：从 project diagram 构造 I2C / DHT22 设备表（供 bridge onI2cTxn/onDhtTxn reply 用）
+  // M9：追加 OLED（addr→partId，attrs.i2cAddr 可覆盖）与 NeoPixel（gpio→partId）设备表
   const i2cDevices = new Map<number, I2cDeviceSpec>();
   const dhtDevices = new Map<number, { partId: string; temp: number; humidity: number }>();
+  const oledDevices = new Map<number, string>();
+  const neopixelPins = new Map<number, string>();
   {
     const row = db.prepare('SELECT diagram FROM projects WHERE id = ?').get(projectId) as
       { diagram: string } | undefined;
@@ -452,6 +478,18 @@ export async function runGoldenEngineB(
             ? (part.attrs.humidity as number)
             : (d.defaults?.humidity ?? 50);
         dhtDevices.set(gpio, { partId: part.id, temp, humidity });
+      } else if ((dev as OledDeviceSpec).kind === 'oled-device') {
+        const d = dev as OledDeviceSpec;
+        const attr = part.attrs['i2cAddr'];
+        const addr =
+          typeof attr === 'string' && attr.startsWith('0x') ? parseInt(attr, 16) : d.address;
+        oledDevices.set(addr, part.id);
+      } else if ((dev as NeopixelDeviceSpec).kind === 'neopixel-device') {
+        const signalPinName = def.pins?.find((p) => p.role === 'signal.io')?.name;
+        if (!signalPinName) continue;
+        const gpio = resolveGpioLocal(part.id, signalPinName);
+        if (gpio === null) continue;
+        neopixelPins.set(gpio, part.id);
       }
     }
   }
@@ -466,7 +504,7 @@ export async function runGoldenEngineB(
   }
   const rec = await builds.waitForFinish(buildId);
   if (rec.status !== 'success' || !rec.artifact) {
-    const tail = (rec.log ?? '').split('\n').slice(-3).join(' | ');
+    const tail = (rec.log ?? '').split('\n').slice(-40).join(' | ');
     return fail(`编译未成功（status=${rec.status}）：${tail}`);
   }
 
@@ -481,6 +519,10 @@ export async function runGoldenEngineB(
   const i2cTxns: GoldenI2cTxn[] = [];
   /** M8 后续：收集到的 DHT22 读数（桥 DHT22_TXN 帧 → expect.sensor 断言） */
   const sensorData: GoldenResult['sensorActual'] = [];
+  /** M9：SSD1306 全帧重组（partId → 1024B 页主序 fb，收到过 ≥1 段才入表） */
+  const fbFrames = new Map<string, Uint8Array>();
+  /** M9：NeoPixel 写入计数 + 最后帧 RGB 字节（partId → 记录） */
+  const neopixelWrites = new Map<string, { writes: number; last: Uint8Array }>();
   const recordWrite = (pin: number, level: 0 | 1): void => {
     const c = gpioCounts.get(pin) ?? { highs: 0, lows: 0 };
     if (level) c.highs += 1;
@@ -490,7 +532,15 @@ export async function runGoldenEngineB(
   const recordPwm = (pin: number, _duty: number): void => {
     pwmCounts.set(pin, (pwmCounts.get(pin) ?? 0) + 1);
   };
-  const needGpio = script.expect.gpio !== undefined || (script.input?.length ?? 0) > 0;
+  /** 桥需求门控：GPIO 断言/输入注入之外，I2C/SPI/DHT/FB/NeoPixel 帧采集也需第二 serial 桥
+   *  （M8 实测缺口：i2c-sensor 无 input/gpio 时桥不创建 → i2cTxns 恒空，真实路径断言必败） */
+  const needBridge =
+    script.expect.gpio !== undefined ||
+    (script.input?.length ?? 0) > 0 ||
+    script.expect.i2c !== undefined ||
+    script.expect.sensor !== undefined ||
+    script.expect.fb !== undefined ||
+    script.expect.neopixel !== undefined;
   const timers: NodeJS.Timeout[] = [];
   /** 统一订阅（真实/stub 通道一致）：GPIO_WRITE 计数 + PIN_MODE pull 记录 */
   const subscribeChannel = (ch: GoldenGpioChannel): void => {
@@ -545,6 +595,8 @@ export async function runGoldenEngineB(
         pinPull.clear();
         i2cTxns.length = 0;
         sensorData.length = 0;
+        fbFrames.clear();
+        neopixelWrites.clear();
         for (const t of timers) clearTimeout(t);
         timers.length = 0;
 
@@ -554,7 +606,7 @@ export async function runGoldenEngineB(
         });
         const serial = await qemu.connectSerial(sessionId);
         // GPIO 桥（第二 serial；M5）：QemuGpioBridge 适配为 GoldenGpioChannel
-        if (needGpio && !channel) {
+        if (needBridge && !channel) {
           const sock = await qemu.connectGpioSerial(sessionId);
           const writeSubs = new Set<(pin: number, level: 0 | 1) => void>();
           const modeSubs = new Set<(pin: number, mode: number) => void>();
@@ -601,6 +653,40 @@ export async function runGoldenEngineB(
                 bridge.sendDhtReply(ev.pin, 0, 0);
               }
             },
+            /** M9：FB_TXN 增量段 → partId 路由 + 全帧重组（与前端 applyFb 同页主序布局） */
+            onFbTxn: (ev) => {
+              const partId = oledDevices.get(ev.addr);
+              if (!partId) return;
+              let fb = fbFrames.get(partId);
+              if (!fb) {
+                fb = new Uint8Array(1024); // SSD1306_COLS(128) × SSD1306_PAGES(8)
+                fbFrames.set(partId, fb);
+              }
+              const pageRows = Math.max(1, Math.floor(ev.h / 8));
+              for (let i = 0; i < ev.w; i++) {
+                for (let j = 0; j < pageRows; j++) {
+                  const src = ev.data[j * ev.w + i] ?? 0;
+                  const col = ev.x + i;
+                  const page = Math.floor(ev.y / 8) + j;
+                  if (col >= 0 && col < 128 && page >= 0 && page < 8) fb[page * 128 + col] = src;
+                }
+              }
+            },
+            /** M9：NEOPIXEL_WRITE 帧 → partId 路由 + GRB→RGB 归一 + 计数/最后帧 */
+            onNeopixelWrite: (ev) => {
+              const partId = neopixelPins.get(ev.pin);
+              if (!partId) return;
+              const rec = neopixelWrites.get(partId) ?? { writes: 0, last: new Uint8Array(0) };
+              rec.writes += 1;
+              const rgb = new Uint8Array(Math.floor(ev.data.length / 3) * 3);
+              for (let i = 0; i + 2 < ev.data.length; i += 3) {
+                rgb[i] = ev.data[i + 1] ?? 0; // G
+                rgb[i + 1] = ev.data[i] ?? 0; // R
+                rgb[i + 2] = ev.data[i + 2] ?? 0; // B
+              }
+              rec.last = rgb;
+              neopixelWrites.set(partId, rec);
+            },
           });
           channel = {
             onGpioWrite: (cb) => writeSubs.add(cb),
@@ -608,7 +694,7 @@ export async function runGoldenEngineB(
             injectInput: (pin, level) => bridge.injectInput(pin, level),
           };
         }
-        if (channel && needGpio) subscribeChannel(channel);
+        if (channel && needBridge) subscribeChannel(channel);
         // 注入就绪门控：等全部输入脚 PIN_MODE 帧观测到（glue pinMode → br_init → 上报，
         // 即固件已跑 setup、桥 RX 稳态）再按 atMs 相对调度，保证注入帧在固件稳态到达、
         // atMs 语义锚定固件就绪时刻（02-§3.2）；10s 未就绪（剧本无 pinMode）退化为
@@ -673,7 +759,7 @@ export async function runGoldenEngineB(
         break;
       }
     } else {
-      if (channel && needGpio) subscribeChannel(channel);
+      if (channel && needBridge) subscribeChannel(channel);
       if (channel) scheduleInputs(channel);
       await opts.serialCollector((l) => lines.push(l), script.durationMs);
     }
@@ -726,7 +812,27 @@ export async function runGoldenEngineB(
     sensorOk = assertSensorData(sensorData, script.expect.sensor);
     sensorDetail = `；sensor collected=${sensorData.length} expect=${script.expect.sensor.length}`;
   }
-  const finalOk = ok && i2cOk && sensorOk;
+  /** M9：实际值组装——FB 全帧 sha256 + NeoPixel 计数/最后帧 sha256 */
+  const fbActual: GoldenResult['fbActual'] = [...fbFrames.entries()].map(([partId, fb]) => ({
+    partId,
+    hash: sha256Hex(fb),
+  }));
+  const neopixelActual: GoldenResult['neopixelActual'] = [...neopixelWrites.entries()].map(
+    ([partId, r]) => ({ partId, writes: r.writes, lastHash: sha256Hex(r.last) }),
+  );
+  let fbOk = true;
+  let fbDetail = '';
+  if (script.expect.fb !== undefined) {
+    fbOk = assertFbHash(fbActual, script.expect.fb);
+    fbDetail = `；fb collected=${fbActual.length} expect=${script.expect.fb.length}`;
+  }
+  let neopixelOk = true;
+  let neopixelDetail = '';
+  if (script.expect.neopixel !== undefined) {
+    neopixelOk = assertNeopixel(neopixelActual, script.expect.neopixel);
+    neopixelDetail = `；neopixel collected=${neopixelActual.length} expect=${script.expect.neopixel.length}`;
+  }
+  const finalOk = ok && i2cOk && sensorOk && fbOk && neopixelOk;
   const serialErrors: string[] = [];
   if (!serialCycleOk && script.expect.serialCycle) {
     serialErrors.push(
@@ -749,6 +855,16 @@ export async function runGoldenEngineB(
       `环境传感器读数不匹配（收集 ${sensorData.length} 条，期望 ${script.expect.sensor.length} 条）`,
     );
   }
+  if (!fbOk && script.expect.fb) {
+    serialErrors.push(
+      `SSD1306 全帧哈希不匹配（收集 ${fbActual.length} 屏，期望 ${script.expect.fb.length} 屏）`,
+    );
+  }
+  if (!neopixelOk && script.expect.neopixel) {
+    serialErrors.push(
+      `NeoPixel 断言不匹配（收集 ${neopixelActual.length} 条，期望 ${script.expect.neopixel.length} 条）`,
+    );
+  }
   return {
     engine: 'qemu-remote',
     exampleId: script.exampleId,
@@ -757,9 +873,11 @@ export async function runGoldenEngineB(
     gpio: gpioActual,
     i2cTxns,
     sensorActual: sensorData,
+    fbActual,
+    neopixelActual,
     error: finalOk
       ? undefined
-      : `${serialErrors.join('；')}${gpioDetail}${i2cDetail}${sensorDetail}`,
+      : `${serialErrors.join('；')}${gpioDetail}${i2cDetail}${sensorDetail}${fbDetail}${neopixelDetail}`,
   };
 }
 
@@ -856,4 +974,43 @@ function computeI2cReply(device: I2cDeviceSpec | undefined, wdata: Uint8Array): 
     return new Uint8Array(reg.defaultBytes.slice(0, size));
   }
   return new Uint8Array(size);
+}
+
+/** M9：字节序列 sha256 hex（小写） */
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
+ * M9：SSD1306 全帧哈希断言
+ * 按 partId 匹配实际重组帧的 sha256（引擎A 无 FB 上报 → fbActual 空 → 必败，调用侧已 skip）。
+ */
+export function assertFbHash(
+  actual: NonNullable<GoldenResult['fbActual']>,
+  expect: NonNullable<GoldenScript['expect']['fb']>,
+): boolean {
+  if (expect.length === 0) return true;
+  for (const e of expect) {
+    const a = actual.find((x) => x.partId === e.partId);
+    if (!a || a.hash !== e.hash) return false;
+  }
+  return true;
+}
+
+/**
+ * M9：NeoPixel 断言——minWrites（写入计数下限）+ lastHash（最后帧 RGB sha256 相等）。
+ * lastHash 缺省时只断言计数；minWrites 缺省时只断言最后帧。
+ */
+export function assertNeopixel(
+  actual: NonNullable<GoldenResult['neopixelActual']>,
+  expect: NonNullable<GoldenScript['expect']['neopixel']>,
+): boolean {
+  if (expect.length === 0) return true;
+  for (const e of expect) {
+    const a = actual.find((x) => x.partId === e.partId);
+    if (!a) return false;
+    if (e.minWrites !== undefined && a.writes < e.minWrites) return false;
+    if (e.lastHash !== undefined && a.lastHash !== e.lastHash) return false;
+  }
+  return true;
 }

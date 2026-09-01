@@ -1,0 +1,14 @@
+{
+  "exampleId": "neopixel-rainbow",
+  "durationMs": 4000,
+  "input": [],
+  "expect": {
+    "serialContainsAll": ["NP: HUE"],
+    "neopixel": [
+      {
+        "partId": "np1",
+        "minWrites": 3
+      }
+    ]
+  }
+}

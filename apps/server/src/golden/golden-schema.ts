@@ -45,6 +45,34 @@ export const goldenSensorExpectSchema = z.object({
   tolerance: z.number().min(0).optional(),
 });
 
+/**
+ * M9：expect.fb 断言——SSD1306 全帧哈希（引擎B FB_TXN 增量段重组后取 sha256；
+ * 引擎A wasm shim 未实现 framebuffer → skip）。
+ * 哈希对象：128×64 单色位图 1024B，页主序 fb[page*128+col]，每字节 8 个垂直像素 LSB=上。
+ */
+export const goldenFbExpectSchema = z.object({
+  /** circuit 中 oled-device part 的 id（定位设备） */
+  partId: z.string().min(1),
+  /** 全帧 sha256 hex（1024B，小写） */
+  hash: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+/**
+ * M9：expect.neopixel 断言——WS2812 写入计数 + 最后帧哈希
+ *（NEOPIXEL_WRITE 帧 GRB→RGB 归一后 sha256；引擎A RMT shim 未实现 → skip）。
+ */
+export const goldenNeopixelExpectSchema = z.object({
+  /** circuit 中 neopixel-device part 的 id（定位设备） */
+  partId: z.string().min(1),
+  /** 窗口内 neopixel.write 最少次数（rainbow 等连续动画 ≥2） */
+  minWrites: z.number().int().positive().optional(),
+  /** 最后一次写入的 RGB 字节序列 sha256 hex（3×N，小写） */
+  lastHash: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+});
+
 export const goldenScriptSchema = z
   .object({
     exampleId: z.string().min(1),
@@ -79,6 +107,10 @@ export const goldenScriptSchema = z
         i2c: z.array(goldenI2cExpectSchema).optional(),
         /** M8 后续：环境传感器读数断言（收集 sensor.data 事件，匹配 partId + 数值容限） */
         sensor: z.array(goldenSensorExpectSchema).optional(),
+        /** M9：SSD1306 全帧哈希断言（引擎B FB_TXN 重组；引擎A skip） */
+        fb: z.array(goldenFbExpectSchema).optional(),
+        /** M9：NeoPixel 写入计数/最后帧哈希断言（引擎B；引擎A skip） */
+        neopixel: z.array(goldenNeopixelExpectSchema).optional(),
       })
       .strict()
       .refine(
@@ -87,8 +119,10 @@ export const goldenScriptSchema = z
           e.serialContainsAll !== undefined ||
           e.gpio !== undefined ||
           e.i2c !== undefined ||
-          e.sensor !== undefined,
-        'expect 必须提供 serialCycle/serialContainsAll/gpio/i2c/sensor 至少一项',
+          e.sensor !== undefined ||
+          e.fb !== undefined ||
+          e.neopixel !== undefined,
+        'expect 必须提供 serialCycle/serialContainsAll/gpio/i2c/sensor/fb/neopixel 至少一项',
       ),
   })
   .strict();
@@ -116,6 +150,10 @@ export interface GoldenResult {
   i2cTxns?: GoldenI2cTxn[];
   /** M8 后续：收集到的 sensor.data 事件（expect.sensor 断言用） */
   sensorActual?: { partId: string; data: Record<string, number>; gpio: number }[];
+  /** M9：SSD1306 全帧 sha256（引擎B FB_TXN 重组结果；引擎A 空） */
+  fbActual?: { partId: string; hash: string }[];
+  /** M9：NeoPixel 写入计数 + 最后帧 sha256（引擎B；引擎A 空） */
+  neopixelActual?: { partId: string; writes: number; lastHash: string }[];
   /** 失败原因（ok=false 时） */
   error?: string;
 }
