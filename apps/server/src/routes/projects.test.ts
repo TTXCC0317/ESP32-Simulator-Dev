@@ -71,6 +71,7 @@ describe('catalog 只读端点（01-§5.2）', () => {
       'wokwi-pushbutton',
       'wokwi-resistor',
       'wokwi-rgb-led',
+      'wokwi-servo',
       'wokwi-slide-switch',
     ]);
     for (const p of parts) expect(p.pins.length, p.type).toBeGreaterThan(0);

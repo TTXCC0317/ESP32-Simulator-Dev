@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "parts": [
+    { "id": "esp", "type": "board-esp32-devkit-c-v4", "left": 80, "top": 20, "attrs": {} },
+    {
+      "id": "servo",
+      "type": "wokwi-servo",
+      "left": 480,
+      "top": 140,
+      "attrs": { "initialAngle": 90 }
+    },
+    {
+      "id": "pot",
+      "type": "wokwi-potentiometer",
+      "left": 460,
+      "top": 320,
+      "attrs": { "value": 50 }
+    }
+  ],
+  "connections": [
+    ["servo:PWM", "esp:GPIO2"],
+    ["servo:VCC", "esp:3V3"],
+    ["servo:GND", "esp:GND.1"],
+    ["pot:SIG", "esp:VP"],
+    ["pot:VCC", "esp:3V3"],
+    ["pot:GND", "esp:GND.1"]
+  ]
+}

@@ -240,7 +240,7 @@ describe('引擎B 输入注入 + GPIO 断言（M5，stub gpioChannel）', () => 
     });
 
     expect(result.ok).toBe(true);
-    expect(result.gpio).toEqual({ pin: 2, highs: 2, lows: 2 });
+    expect(result.gpio).toEqual({ pin: 2, highs: 2, lows: 2, pwmWrites: 0 });
     // 注入序列：按下 0 → 释放回退 pullup 1 ×2 轮（05-§1.4 release 语义）
     expect(injected).toEqual([
       { pin: 4, level: 0 },
@@ -278,7 +278,7 @@ describe('引擎B 输入注入 + GPIO 断言（M5，stub gpioChannel）', () => 
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain('gpio pin2');
-    expect(result.gpio).toEqual({ pin: 2, highs: 1, lows: 0 });
+    expect(result.gpio).toEqual({ pin: 2, highs: 1, lows: 0, pwmWrites: 0 });
     rmSync(dir, { recursive: true, force: true });
     db.close();
   });

@@ -63,11 +63,25 @@ EM_JS(int, js_uart_rx_avail, (int port), {
     return bridge && bridge.uartAvailable ? bridge.uartAvailable(port) : 0;
 });
 
+/** PWM 写：上报 duty（0–1023，10 位）+ freq（Hz）→ PinBus.pwm 事件 */
+EM_JS(void, js_pwm_write, (int pin, int duty, int freq), {
+    const bridge = globalThis.__mpyMachine;
+    if (bridge && bridge.pwmWrite) bridge.pwmWrite(pin, duty, freq);
+});
+
+/** ADC 读：同步返回 12 位（0–4095），无注入返回 0 */
+EM_JS(int, js_adc_read, (int pin), {
+    const bridge = globalThis.__mpyMachine;
+    return bridge && bridge.adcRead ? bridge.adcRead(pin) : 0;
+});
+
 // ---- Pin ----
 
 /* 前向声明：make_new 先于 MP_DEFINE_CONST_OBJ_TYPE 使用 */
 extern const mp_obj_type_t machine_pin_type;
 extern const mp_obj_type_t machine_uart_type;
+extern const mp_obj_type_t machine_pwm_type;
+extern const mp_obj_type_t machine_adc_type;
 
 typedef struct _machine_pin_obj_t {
     mp_obj_base_t base;
@@ -131,12 +145,19 @@ static const mp_rom_map_elem_t machine_pin_locals_dict_table[] = {
 static MP_DEFINE_CONST_DICT(machine_pin_locals_dict, machine_pin_locals_dict_table);
 
 static mp_obj_t machine_pin_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
-    mp_arg_check_num(n_args, n_kw, 1, 3, false);
+    enum { ARG_pin, ARG_mode, ARG_pull };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_pin,   MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_mode,  MP_ARG_INT,                   {.u_int = 1} },
+        { MP_QSTR_pull,  MP_ARG_INT,                   {.u_int = 0} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, args, MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
     machine_pin_obj_t *self = m_new_obj(machine_pin_obj_t);
     self->base.type = &machine_pin_type;
-    self->id = mp_obj_get_int(args[0]);
-    self->mode = (n_args >= 2) ? mp_obj_get_int(args[1]) : 1;
-    self->pull = (n_args >= 3) ? mp_obj_get_int(args[2]) : 0;
+    self->id = mp_obj_get_int(vals[ARG_pin].u_obj);
+    self->mode = vals[ARG_mode].u_int;
+    self->pull = vals[ARG_pull].u_int;
     self->irq_handler = mp_const_none;
     self->irq_trigger = 3; /* 默认 RISING|FALLING */
     if (self->id >= 0 && self->id < MACHINE_PIN_MAX) {
@@ -171,11 +192,17 @@ static void machine_uart_print(const mp_print_t *print, mp_obj_t self_in, mp_pri
 }
 
 static mp_obj_t machine_uart_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
-    mp_arg_check_num(n_args, n_kw, 1, 2, false);
+    enum { ARG_id, ARG_baudrate };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_id,        MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_baudrate,  MP_ARG_INT,                   {.u_int = 9600} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, args, MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
     machine_uart_obj_t *self = m_new_obj(machine_uart_obj_t);
     self->base.type = &machine_uart_type;
-    self->id = mp_obj_get_int(args[0]);
-    self->baudrate = (n_args >= 2) ? mp_obj_get_int(args[1]) : 9600;
+    self->id = vals[ARG_id].u_int;
+    self->baudrate = vals[ARG_baudrate].u_int;
     return MP_OBJ_FROM_PTR(self);
 }
 
@@ -240,12 +267,179 @@ MP_DEFINE_CONST_OBJ_TYPE(
     locals_dict, &machine_uart_locals_dict
     );
 
+// ---- PWM ----
+
+typedef struct _machine_pwm_obj_t {
+    mp_obj_base_t base;
+    mp_int_t pin;
+    mp_int_t freq;
+    mp_int_t duty;
+} machine_pwm_obj_t;
+
+static void machine_pwm_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+    machine_pwm_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_printf(print, "PWM(pin=%d, freq=%d, duty=%d)", (int)self->pin, (int)self->freq, (int)self->duty);
+}
+
+/** PWM.duty([val])：无参读、有参写（0–1023，10 位），支持 duty= 关键字参数 */
+static mp_obj_t machine_pwm_duty(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_duty };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_duty, MP_ARG_INT, {.u_int = -1} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
+    machine_pwm_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    if (vals[ARG_duty].u_int >= 0) {
+        mp_int_t v = vals[ARG_duty].u_int;
+        if (v < 0) v = 0;
+        if (v > 1023) v = 1023;
+        self->duty = v;
+        js_pwm_write((int)self->pin, (int)self->duty, (int)self->freq);
+        return mp_const_none;
+    }
+    return MP_OBJ_NEW_SMALL_INT(self->duty);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(machine_pwm_duty_obj, 1, machine_pwm_duty);
+
+/** PWM.freq([val])：无参读、有参写（Hz，>= 1），支持 freq= 关键字参数 */
+static mp_obj_t machine_pwm_freq(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_freq };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_freq, MP_ARG_INT, {.u_int = -1} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
+    machine_pwm_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    if (vals[ARG_freq].u_int >= 0) {
+        mp_int_t v = vals[ARG_freq].u_int;
+        if (v < 1) v = 1;
+        self->freq = v;
+        js_pwm_write((int)self->pin, (int)self->duty, (int)self->freq);
+        return mp_const_none;
+    }
+    return MP_OBJ_NEW_SMALL_INT(self->freq);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(machine_pwm_freq_obj, 1, machine_pwm_freq);
+
+static const mp_rom_map_elem_t machine_pwm_locals_dict_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_duty), MP_ROM_PTR(&machine_pwm_duty_obj) },
+    { MP_ROM_QSTR(MP_QSTR_freq), MP_ROM_PTR(&machine_pwm_freq_obj) },
+};
+static MP_DEFINE_CONST_DICT(machine_pwm_locals_dict, machine_pwm_locals_dict_table);
+
+static mp_obj_t machine_pwm_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    enum { ARG_pin, ARG_freq, ARG_duty };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_pin,   MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_freq,  MP_ARG_INT,                   {.u_int = 1000} },
+        { MP_QSTR_duty,  MP_ARG_INT,                   {.u_int = 0} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, args, MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
+    machine_pwm_obj_t *self = m_new_obj(machine_pwm_obj_t);
+    self->base.type = &machine_pwm_type;
+    /* 第 1 参：Pin 对象或 int 引脚号 */
+    if (MP_OBJ_IS_TYPE(vals[ARG_pin].u_obj, &machine_pin_type)) {
+        machine_pin_obj_t *p = MP_OBJ_TO_PTR(vals[ARG_pin].u_obj);
+        self->pin = p->id;
+    } else {
+        self->pin = mp_obj_get_int(vals[ARG_pin].u_obj);
+    }
+    self->freq = vals[ARG_freq].u_int;
+    if (self->freq < 1) self->freq = 1;
+    self->duty = vals[ARG_duty].u_int;
+    if (self->duty < 0) self->duty = 0;
+    if (self->duty > 1023) self->duty = 1023;
+    /* 构造即上报，确保 PinBus 立即感知 PWM 状态 */
+    js_pwm_write((int)self->pin, (int)self->duty, (int)self->freq);
+    return MP_OBJ_FROM_PTR(self);
+}
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    machine_pwm_type,
+    MP_QSTR_PWM,
+    MP_TYPE_FLAG_NONE,
+    make_new, machine_pwm_make_new,
+    print, machine_pwm_print,
+    locals_dict, &machine_pwm_locals_dict
+    );
+
+// ---- ADC ----
+
+typedef struct _machine_adc_obj_t {
+    mp_obj_base_t base;
+    mp_int_t pin;
+} machine_adc_obj_t;
+
+static void machine_adc_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+    machine_adc_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_printf(print, "ADC(Pin(%d))", (int)self->pin);
+}
+
+/** ADC.read() → 12 位（0–4095），直接同步读 JS 侧 PinBus */
+static mp_obj_t machine_adc_read(mp_obj_t self_in) {
+    machine_adc_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_int_t v = js_adc_read((int)self->pin);
+    if (v < 0) v = 0;
+    if (v > 4095) v = 4095;
+    return MP_OBJ_NEW_SMALL_INT(v);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(machine_adc_read_obj, machine_adc_read);
+
+/** ADC.read_u16() → 16 位（0–65535），12 位线性映射 */
+static mp_obj_t machine_adc_read_u16(mp_obj_t self_in) {
+    machine_adc_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_int_t v = js_adc_read((int)self->pin);
+    if (v < 0) v = 0;
+    if (v > 4095) v = 4095;
+    /* 0–4095 → 0–65520，4095*16=65520（MicroPython 官方约定） */
+    return MP_OBJ_NEW_SMALL_INT(v * 16);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(machine_adc_read_u16_obj, machine_adc_read_u16);
+
+static const mp_rom_map_elem_t machine_adc_locals_dict_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&machine_adc_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_u16), MP_ROM_PTR(&machine_adc_read_u16_obj) },
+};
+static MP_DEFINE_CONST_DICT(machine_adc_locals_dict, machine_adc_locals_dict_table);
+
+static mp_obj_t machine_adc_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    enum { ARG_pin };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_pin, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, args, MP_ARRAY_SIZE(allowed_args), allowed_args, vals);
+    machine_adc_obj_t *self = m_new_obj(machine_adc_obj_t);
+    self->base.type = &machine_adc_type;
+    /* 接受 Pin 对象或 int 引脚号 */
+    if (MP_OBJ_IS_TYPE(vals[ARG_pin].u_obj, &machine_pin_type)) {
+        machine_pin_obj_t *p = MP_OBJ_TO_PTR(vals[ARG_pin].u_obj);
+        self->pin = p->id;
+    } else {
+        self->pin = mp_obj_get_int(vals[ARG_pin].u_obj);
+    }
+    return MP_OBJ_FROM_PTR(self);
+}
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    machine_adc_type,
+    MP_QSTR_ADC,
+    MP_TYPE_FLAG_NONE,
+    make_new, machine_adc_make_new,
+    print, machine_adc_print,
+    locals_dict, &machine_adc_locals_dict
+    );
+
 // ---- machine 模块 ----
 
 static const mp_rom_map_elem_t machine_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_machine) },
     { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&machine_pin_type) },
     { MP_ROM_QSTR(MP_QSTR_UART), MP_ROM_PTR(&machine_uart_type) },
+    { MP_ROM_QSTR(MP_QSTR_PWM), MP_ROM_PTR(&machine_pwm_type) },
+    { MP_ROM_QSTR(MP_QSTR_ADC), MP_ROM_PTR(&machine_adc_type) },
 };
 static MP_DEFINE_CONST_DICT(machine_module_globals, machine_module_globals_table);
 

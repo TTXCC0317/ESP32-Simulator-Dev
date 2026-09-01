@@ -1,0 +1,12 @@
+{
+  "exampleId": "pwm-breath",
+  "durationMs": 6000,
+  "input": [],
+  "expect": {
+    "serialCycle": ["PEAK", "VALLEY"],
+    "gpio": {
+      "pin": 4,
+      "minPwm": 4
+    }
+  }
+}

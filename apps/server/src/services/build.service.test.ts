@@ -1,11 +1,16 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appConfigSchema, type AppConfig } from '../config/schema';
 import { openDatabase, type Db } from '../db/client';
 import { runMigrations } from '../db/migrator';
-import { BuildService, type BuildRunner, type BuildEvent } from './build.service';
+import {
+  BuildService,
+  cleanupOrphanedBuildDirs,
+  type BuildRunner,
+  type BuildEvent,
+} from './build.service';
 
 /**
  * L1（02-§4 M4 测试项）：build.service 状态机
@@ -200,6 +205,41 @@ describe('BuildService 状态机（03-§7.1）', () => {
     expect(db.prepare('SELECT artifact FROM builds WHERE id = ?').get(b2)).toEqual({
       artifact: null,
     });
+  });
+
+  it('磁盘配额：孤儿目录（DB 无对应行）不计入 total，不触发误删新产物', async () => {
+    // 复现场景：Golden CLI 内存库 + data/builds/ 累积 ~2GB 历史残留 bld-*
+    // 修复前 enforceQuota 用 dirSize(root) 扫描整个目录 → total 虚高 → 误删刚编译的产物
+    const { service, dir } = setup(makeRunner('ok'), { quotaMb: 2 });
+    // 伪造孤儿目录（DB 无对应行），3MB > quotaMb=2MB
+    const orphanDir = join(dir, 'builds', 'bld-orphan-residual');
+    mkdirSync(orphanDir, { recursive: true });
+    writeFileSync(join(orphanDir, 'flash.img'), Buffer.alloc(3 * 1024 * 1024));
+    // submit 真实 build，产物 1.6MB；DB 只有这一行，total=1.6MB < quotaMb=2MB，不应被删
+    const b1 = service.submit('p1', 'arduino').buildId;
+    await service.waitForFinish(b1);
+    expect(existsSync(join(service.buildDir(b1), 'flash.img'))).toBe(true);
+    // 孤儿目录仍在（enforceQuota 不删孤儿，由 cleanupOrphanedBuildDirs 处理）
+    expect(existsSync(join(orphanDir, 'flash.img'))).toBe(true);
+  });
+
+  it('cleanupOrphanedBuildDirs：清理 data/builds/ 下不在 DB 的 bld-* 目录', () => {
+    const { db, config, dir } = setup(makeRunner('ok'));
+    const root = join(dir, 'builds');
+    // 两个孤儿目录（DB 无对应行）
+    const orphan1 = join(root, 'bld-orphan-aaa');
+    mkdirSync(orphan1, { recursive: true });
+    writeFileSync(join(orphan1, 'flash.img'), Buffer.alloc(1024));
+    const orphan2 = join(root, 'bld-orphan-bbb');
+    mkdirSync(orphan2, { recursive: true });
+    // 非 bld- 前缀目录（不应被清理）
+    const other = join(root, 'other-dir');
+    mkdirSync(other, { recursive: true });
+    const removed = cleanupOrphanedBuildDirs(config, db);
+    expect(removed).toBe(2);
+    expect(existsSync(orphan1)).toBe(false);
+    expect(existsSync(orphan2)).toBe(false);
+    expect(existsSync(other)).toBe(true);
   });
 
   it('submit 前置校验：无 .ino / 未知 toolchain 抛错且不落库', () => {

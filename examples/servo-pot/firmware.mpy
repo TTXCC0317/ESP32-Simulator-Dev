@@ -1,0 +1,13 @@
+from machine import Pin, ADC, PWM
+import time
+
+adc = ADC(Pin(36))   # VP = GPIO36
+servo = PWM(Pin(2), freq=50, duty=77)   # 50Hz, duty=77（≈90°）
+
+while True:
+    v = adc.read_u16()          # 0–65535（MicroPython 标准）
+    duty = int(v / 65535 * 102) + 26
+    duty = max(26, min(128, duty))
+    servo.duty(duty)
+    print("ADC:", v, "DUTY:", duty)
+    time.sleep_ms(50)

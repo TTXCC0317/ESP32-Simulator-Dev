@@ -1,0 +1,19 @@
+from machine import Pin, PWM
+import time
+
+p = PWM(Pin(4), freq=1000, duty=0)
+duty = 0
+step = 128
+direction = 1
+
+while True:
+    p.duty(duty)
+    if duty >= 1023:
+        direction = -1
+        print("PEAK", duty)
+    elif duty <= 0:
+        direction = 1
+        print("VALLEY", duty)
+    duty += step * direction
+    duty = max(0, min(1023, duty))
+    time.sleep_ms(20)

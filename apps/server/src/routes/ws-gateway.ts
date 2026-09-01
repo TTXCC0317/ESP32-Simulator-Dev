@@ -245,8 +245,9 @@ export async function wsGatewayRoutes(
         return onInputUart(s, msg.payload.bytes);
       case 'input.pin':
         return onInputPin(s, msg.payload);
+      case 'input.analog':
+        return onInputAnalog(s, msg.payload);
       default:
-        // input.analog：M7 ADC 桥接入
         sendErr(s, 'UNSUPPORTED', `${msg.type} 暂未支持`);
     }
   }
@@ -461,7 +462,7 @@ export async function wsGatewayRoutes(
     void spawnQemuFor(s);
   }
 
-  /** GPIO 桥接线（M5）：桥断开不致会话失败（串口监视仍可用），仅告警 */
+  /** GPIO 桥接线（M5/M7）：桥断开不致会话失败（串口监视仍可用），仅告警 */
   function attachGpioBridge(s: GwSession, sessionId: string): void {
     detachBridge(s);
     s.gpioSeq = 0;
@@ -483,6 +484,13 @@ export async function wsGatewayRoutes(
             const pull = pullOfMode(mode);
             if (pull === null) s.pinPull.delete(pin);
             else s.pinPull.set(pin, pull);
+          },
+          onPwmWrite: (pin, duty) => {
+            const freq = s.bridge?.getFreq(pin) ?? 1000;
+            send(s, { type: 'pwm.duty', payload: { pin, duty, freq } });
+          },
+          onPwmFreq: (_pin, _freq) => {
+            /* freq 由 bridge.freqOfPin 跟踪，onPwmWrite 时组合上报 */
           },
         });
         gpioSocket.on('close', () => {
@@ -582,7 +590,30 @@ export async function wsGatewayRoutes(
     bridge.injectInput(gpio, level);
   }
 
-  /** 元件引脚 → 板卡 GPIO：板卡引脚直查 pinmap；元件引脚沿连接 BFS 找板卡引脚 */
+  /**
+   * 模拟值注入（M7 ADC 桥）：partId/pin → 板卡 ADC 功能 GPIO → 桥注入；
+   * 目标 GPIO caps 不含 'adc' 时报 ADC_PIN_INVALID 错误。
+   */
+  function onInputAnalog(s: GwSession, p: { partId: string; pin: string; value: number }): void {
+    if (s.state !== 'running' && s.state !== 'paused') {
+      sendErr(s, 'INVALID_STATE', '引擎未运行，模拟注入被丢弃');
+      return;
+    }
+    if (s.qemuSessionId) qemu.touch(s.qemuSessionId);
+    const bridge = s.bridge;
+    if (!bridge) {
+      sendErr(s, 'NO_GPIO_BRIDGE', 'GPIO 桥未连接');
+      return;
+    }
+    const gpio = resolveGpioAdc(s, p.partId, p.pin);
+    if (gpio === null) {
+      sendErr(s, 'ADC_PIN_INVALID', `引脚 ${p.partId}:${p.pin} 未连接到板卡 ADC 功能脚`);
+      return;
+    }
+    bridge.injectAnalog(gpio, p.value);
+  }
+
+  /** 元件引脚 → 板卡 GPIO：板卡引脚直查 pinmap；元件引脚沿连接 BFS 找板卡引脚（普通 GPIO） */
   function resolveGpio(s: GwSession, partId: string, pinName: string): number | null {
     if (!s.boardPartId || !s.boardType) return null;
     if (partId === s.boardPartId) return gpioOf(s.boardType, pinName);
@@ -605,12 +636,56 @@ export async function wsGatewayRoutes(
     return null;
   }
 
+  /** 元件引脚 → 板卡 ADC GPIO：同 resolveGpio 路径，但要求目标引脚 caps 含 'adc' */
+  function resolveGpioAdc(s: GwSession, partId: string, pinName: string): number | null {
+    if (!s.boardPartId || !s.boardType) return null;
+    if (partId === s.boardPartId) {
+      const gpio = gpioOf(s.boardType, pinName);
+      if (gpio === null) return null;
+      return gpioHasAdc(s.boardType, pinName) ? gpio : null;
+    }
+
+    const start = `${partId}:${pinName}`;
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const cur = queue.shift() as string;
+      for (const nxt of s.adj?.get(cur) ?? []) {
+        if (seen.has(nxt)) continue;
+        seen.add(nxt);
+        const idx = nxt.indexOf(':');
+        if (nxt.slice(0, idx) === s.boardPartId) {
+          const boardPinName = nxt.slice(idx + 1);
+          const gpio = gpioOf(s.boardType, boardPinName);
+          if (gpio === null) return null;
+          return gpioHasAdc(s.boardType, boardPinName) ? gpio : null;
+        }
+        queue.push(nxt);
+      }
+    }
+    return null;
+  }
+
   /** board_pinmaps 查询（catalog 启动导入，01-§6） */
   function gpioOf(boardType: string, pinName: string): number | null {
     const row = db
       .prepare('SELECT gpio_no FROM board_pinmaps WHERE board_type = ? AND pin_name = ?')
       .get(boardType, pinName) as { gpio_no: number } | undefined;
     return row ? row.gpio_no : null;
+  }
+
+  /** board_pinmaps capabilities 校验：caps JSON 数组含 'adc' 即 true */
+  function gpioHasAdc(boardType: string, pinName: string): boolean {
+    const row = db
+      .prepare('SELECT capabilities FROM board_pinmaps WHERE board_type = ? AND pin_name = ?')
+      .get(boardType, pinName) as { capabilities: string } | undefined;
+    if (!row) return false;
+    try {
+      const caps = JSON.parse(row.capabilities) as string[];
+      return Array.isArray(caps) && caps.includes('adc');
+    } catch {
+      return false;
+    }
   }
 
   // ---- 内部：状态与会话生命周期 ----

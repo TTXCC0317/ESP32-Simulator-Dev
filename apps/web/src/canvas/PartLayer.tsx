@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { PartDefinition, PartInstance } from '@esp32-sim/shared';
+import type { PartDefinition, PartInstance, PinRef } from '@esp32-sim/shared';
 import { Circle, Ellipse, Group, Line, Rect, Text } from 'react-konva';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import { useCircuitStore } from '../circuit/circuitStore';
@@ -8,7 +8,7 @@ import { useSimStore } from '../stores/sim';
 import { useRuntimeStore } from '../stores/runtime';
 import { useUiStore } from '../stores/ui';
 import { startBuzzer, stopBuzzer } from '../audio/buzzer';
-import { pressButton, releaseButton, toggleSwitch } from '../sim/part-input';
+import { pressButton, releaseButton, setPotentiometerValue, toggleSwitch } from '../sim/part-input';
 import { buildNetMap, type NetMap } from '../sim/net-map';
 import {
   PART_BODY,
@@ -35,7 +35,7 @@ import {
 
 type KonvaE = KonvaEventObject<PointerEvent>;
 
-/** 元件运行时视觉状态（bodyShape 渲染入参；M5） */
+/** 元件运行时视觉状态（bodyShape 渲染入参；M5/M7） */
 interface RuntimeVisual {
   /** LED 点亮色（null=灭） */
   ledOn: boolean;
@@ -46,6 +46,12 @@ interface RuntimeVisual {
   pressed: boolean;
   switchPos: '1' | '2';
   buzzing: boolean;
+  /** 电位器旋钮角度（0–100% → −150°~+150° 摆幅 300°） */
+  potentiometerAngle: number;
+  /** 舵机摆臂角度（0–180°） */
+  servoAngle: number;
+  /** 电位器未接电源 → 画警告边框 */
+  potWarn: boolean;
 }
 
 interface PartViewProps {
@@ -236,11 +242,13 @@ function bodyShape(part: PartInstance, def: PartDefinition, rt: RuntimeVisual) {
             height={70}
             cornerRadius={8}
             fill={PART_BODY_LIGHT}
-            stroke={PART_STROKE}
-            strokeWidth={2}
+            stroke={rt.potWarn ? '#dc2626' : PART_STROKE}
+            strokeWidth={rt.potWarn ? 3 : 2}
           />
           <Circle x={48} y={42} radius={22} fill={PART_BODY} stroke={PART_STROKE} strokeWidth={2} />
-          <Line points={[48, 42, 48, 24]} stroke={TEXT_DIM} strokeWidth={3} listening={false} />
+          <Group x={48} y={42} rotation={rt.potentiometerAngle}>
+            <Line points={[0, 0, 0, -18]} stroke={TEXT_DIM} strokeWidth={3} listening={false} />
+          </Group>
         </Fragment>
       );
     case 'wokwi-slide-switch': {
@@ -291,6 +299,97 @@ function bodyShape(part: PartInstance, def: PartDefinition, rt: RuntimeVisual) {
           <Text x={20} y={52} text="BUZZER" fontSize={8} fill={TEXT_DIM} listening={false} />
         </Fragment>
       );
+    case 'wokwi-servo': {
+      const w = def.renderer.width;
+      const h = def.renderer.height;
+      return (
+        <Fragment>
+          {/* 安装法兰（左右两耳） */}
+          <Rect
+            x={4}
+            y={6}
+            width={12}
+            height={32}
+            cornerRadius={3}
+            fill={PART_BODY_LIGHT}
+            stroke={PART_STROKE}
+            strokeWidth={1}
+          />
+          <Rect
+            x={w - 16}
+            y={6}
+            width={12}
+            height={32}
+            cornerRadius={3}
+            fill={PART_BODY_LIGHT}
+            stroke={PART_STROKE}
+            strokeWidth={1}
+          />
+          <Circle x={10} cy={22} r={2.5} fill={PART_STROKE} />
+          <Circle x={w - 10} cy={22} r={2.5} fill={PART_STROKE} />
+          {/* 主体 */}
+          <Rect
+            x={14}
+            y={14}
+            width={w - 28}
+            height={56}
+            cornerRadius={6}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          {/* 舵盘 + 摆臂（旋转中心 = 主体顶部中心，x=w/2, y≈42） */}
+          <Group x={w / 2} y={42} rotation={rt.servoAngle - 90}>
+            {/* 舵盘圆形 */}
+            <Circle radius={14} fill={PART_BODY_LIGHT} stroke={PART_STROKE} strokeWidth={1.5} />
+            {/* 摆臂（从中心向"上方"伸出，rotation 控制方向） */}
+            <Rect
+              x={-2}
+              y={-30}
+              width={4}
+              height={34}
+              cornerRadius={2}
+              fill="#1f2937"
+              stroke={PART_STROKE}
+              strokeWidth={1}
+            />
+            {/* 摆臂端小圆 */}
+            <Circle x={0} y={-26} r={3} fill="#111827" />
+          </Group>
+          {/* 底部引脚标识（文字） */}
+          <Text
+            x={8}
+            y={h - 6}
+            width={20}
+            text="G"
+            fontSize={7}
+            fill={TEXT_DIM}
+            align="center"
+            listening={false}
+          />
+          <Text
+            x={w / 2 - 10}
+            y={h - 6}
+            width={20}
+            text="V"
+            fontSize={7}
+            fill={TEXT_DIM}
+            align="center"
+            listening={false}
+          />
+          <Text
+            x={w - 28}
+            y={h - 6}
+            width={20}
+            text="S"
+            fontSize={7}
+            fill={TEXT_DIM}
+            align="center"
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
     default:
       return <Rect width={w} height={h} fill={PART_BODY} stroke={PART_STROKE} strokeWidth={2} />;
   }
@@ -373,6 +472,44 @@ export function PartView(props: PartViewProps) {
     return stopBuzzer;
   }, [def.type, buzzing, runtimeActive, volume, muted]);
 
+  // 电位器：attrs.value 变更 → analog.value 注入（运行中有效）
+  const potValue = Number(part.attrs['value'] ?? 50);
+  const potPowered = useMemo(() => {
+    if (def.type !== 'wokwi-potentiometer') return false;
+    return (
+      netMap.netRoleOf(`${part.id}:VCC` as PinRef) === 'power' &&
+      netMap.netRoleOf(`${part.id}:GND` as PinRef) === 'gnd'
+    );
+  }, [def.type, netMap, part.id]);
+  // 本地 knob 显示角度（idle 状态也显示 attrs.value 映射的旋钮位置）
+  const potentiometerAngle = def.type === 'wokwi-potentiometer' ? (potValue / 100) * 300 - 150 : 0;
+  // 运行中 attrs.value 变化 → 注入（用 useEffect，避免每次重渲染都注入）
+  useEffect(() => {
+    if (def.type !== 'wokwi-potentiometer') return;
+    if (!runtimeActive) return;
+    const ok = setPotentiometerValue(part.id, potValue);
+    // 若返回 false（未接电源）→ 不报错，Inspector 的警告由 potPowered 展示
+    void ok;
+  }, [def.type, part.id, potValue, runtimeActive]);
+
+  // 舵机：PWM 网络监听 → 角度换算
+  const servoGpio = useMemo(
+    () => (def.type === 'wokwi-servo' ? netMap.gpioOf(`${part.id}:PWM`) : null),
+    [def.type, netMap, part.id],
+  );
+  const servoPwm = useRuntimeStore((s) =>
+    servoGpio !== null ? (s.pwmDuties.get(servoGpio) ?? null) : null,
+  );
+  const initialAngle = Number(part.attrs['initialAngle'] ?? 90);
+  const servoAngle = useMemo(() => {
+    if (def.type !== 'wokwi-servo') return 0;
+    if (!servoPwm) return initialAngle;
+    const { duty } = servoPwm;
+    // findings D3 公式：clamp(round((duty-26)/102 * 180), 0, 180)
+    const deg = Math.round(((Math.max(0, Math.min(1023, duty)) - 26) / 102) * 180);
+    return Math.max(0, Math.min(180, deg));
+  }, [def.type, servoPwm, initialAngle]);
+
   // 按键/开关交互（运行中点击 → 注入；空闲 → 选择/移动）
   const interaction =
     def.type === 'wokwi-pushbutton'
@@ -420,7 +557,17 @@ export function PartView(props: PartViewProps) {
       ? `rgb(${rLevel * 224}, ${gLevel * 224}, ${bLevel * 224})`
       : null;
 
-  const rt: RuntimeVisual = { ledOn, ledAlpha, rgbColor, pressed, switchPos, buzzing };
+  const rt: RuntimeVisual = {
+    ledOn,
+    ledAlpha,
+    rgbColor,
+    pressed,
+    switchPos,
+    buzzing,
+    potentiometerAngle,
+    servoAngle,
+    potWarn: def.type === 'wokwi-potentiometer' && runtimeActive && !potPowered,
+  };
 
   return (
     <Group

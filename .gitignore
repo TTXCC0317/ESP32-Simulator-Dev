@@ -54,3 +54,8 @@ test-results/
 # 临时日志（上一会话 skill 安装日志等）
 skills-install.log
 *.local.log
+
+# 规划工作文档（已并入 documents/ 对应章节，原始文件不入仓）
+findings.md
+progress.md
+task_plan.md

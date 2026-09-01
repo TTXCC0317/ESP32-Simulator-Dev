@@ -2,10 +2,11 @@ import { partDefinitionSchema, type PartDefinition } from '@esp32-sim/shared';
 import boardJson from '../../../../config/parts/board-esp32-devkit-c-v4.json';
 import buzzerJson from '../../../../config/parts/wokwi-buzzer.json';
 import ledJson from '../../../../config/parts/wokwi-led.json';
-import pushbuttonJson from '../../../../config/parts/wokwi-pushbutton.json';
 import potentiometerJson from '../../../../config/parts/wokwi-potentiometer.json';
+import pushbuttonJson from '../../../../config/parts/wokwi-pushbutton.json';
 import resistorJson from '../../../../config/parts/wokwi-resistor.json';
 import rgbLedJson from '../../../../config/parts/wokwi-rgb-led.json';
+import servoJson from '../../../../config/parts/wokwi-servo.json';
 import slideSwitchJson from '../../../../config/parts/wokwi-slide-switch.json';
 
 /**
@@ -25,6 +26,7 @@ const SOURCES = [
   potentiometerJson,
   slideSwitchJson,
   buzzerJson,
+  servoJson,
 ] as const;
 
 /** zod 校验（配置为边界输入，校验失败 fail-fast——配置错误应在开发期暴露） */

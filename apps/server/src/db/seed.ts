@@ -148,6 +148,183 @@ const BUTTON_LED_MANIFEST: ExampleManifest = {
   ],
 };
 
+/** pwm-breath 示例 diagram：GPIO4 PWM 驱动蓝灯（串 220Ω 到 GND）M7 双引擎 PWM 断言示例 */
+const PWM_BREATH_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 120, top: 40, rotate: 0, attrs: {} },
+    { id: 'led', type: 'wokwi-led', left: 420, top: 160, rotate: 0, attrs: { color: 'blue' } },
+    {
+      id: 'r1',
+      type: 'wokwi-resistor',
+      left: 400,
+      top: 260,
+      rotate: 0,
+      attrs: { resistance: 220 },
+    },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO4', target: 'led:A', color: 'orange', path: [] },
+    { id: 'w2', source: 'led:C', target: 'r1:1', color: 'green', path: [] },
+    { id: 'w3', source: 'r1:2', target: 'esp:GND.1', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const PWM_BREATH_MANIFEST: ExampleManifest = {
+  description: 'GPIO4 PWM 蓝灯呼吸：PEAK/VALLEY 串口循环 + minPwm 计数断言（M7）',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'micropython-wasm',
+  diagram: PWM_BREATH_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        'from machine import Pin, PWM',
+        'import time',
+        '',
+        'p = PWM(Pin(4), freq=1000, duty=0)',
+        'duty = 0',
+        'step = 128',
+        'direction = 1',
+        '',
+        'while True:',
+        '    p.duty(duty)',
+        '    if duty >= 1023:',
+        '        direction = -1',
+        '        print("PEAK", duty)',
+        '    elif duty <= 0:',
+        '        direction = 1',
+        '        print("VALLEY", duty)',
+        '    duty += step * direction',
+        '    duty = max(0, min(1023, duty))',
+        '    time.sleep_ms(20)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '  analogWriteFrequency(4, 1000);',
+        '}',
+        '',
+        'int duty = 0;',
+        'int step = 8;   // 0–255 8 位，×4 归一到 10 位',
+        'int dir = 1;',
+        '',
+        'void loop() {',
+        '  analogWrite(4, duty);',
+        '  if (duty >= 255) {',
+        '    dir = -1;',
+        '    Serial.printf("PEAK %d\\n", (int)duty * 4);',
+        '  } else if (duty <= 0) {',
+        '    dir = 1;',
+        '    Serial.printf("VALLEY %d\\n", (int)duty * 4);',
+        '  }',
+        '  duty += step * dir;',
+        '  duty = max(0, min(255, duty));',
+        '  delay(30);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
+/** servo-pot 示例 diagram：GPIO2 PWM→舵机，VP ADC→电位器（3V3/GND 电源）M7 ADC 示例 */
+const SERVO_POT_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 80, top: 20, rotate: 0, attrs: {} },
+    {
+      id: 'servo',
+      type: 'wokwi-servo',
+      left: 480,
+      top: 140,
+      rotate: 0,
+      attrs: { initialAngle: 90 },
+    },
+    {
+      id: 'pot',
+      type: 'wokwi-potentiometer',
+      left: 460,
+      top: 320,
+      rotate: 0,
+      attrs: { value: 50 },
+    },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO2', target: 'servo:PWM', color: 'orange', path: [] },
+    { id: 'w2', source: 'esp:3V3', target: 'servo:VCC', color: 'red', path: [] },
+    { id: 'w3', source: 'esp:GND.1', target: 'servo:GND', color: 'black', path: [] },
+    { id: 'w4', source: 'pot:SIG', target: 'esp:VP', color: 'green', path: [] },
+    { id: 'w5', source: 'esp:3V3', target: 'pot:VCC', color: 'red', path: [] },
+    { id: 'w6', source: 'esp:GND.1', target: 'pot:GND', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const SERVO_POT_MANIFEST: ExampleManifest = {
+  description: 'ADC(VP) 读电位器 → PWM(GPIO2) 控舵机角度：ADC+DUTY 串口断言（M7）',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'micropython-wasm',
+  diagram: SERVO_POT_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        'from machine import Pin, ADC, PWM',
+        'import time',
+        '',
+        'adc = ADC(Pin(36))   # VP = GPIO36',
+        'servo = PWM(Pin(2), freq=50, duty=77)   # 50Hz, duty=77（≈90°）',
+        '',
+        'while True:',
+        '    v = adc.read_u16()          # 0–65535（MicroPython 标准 API）',
+        '    # 0–65535 → duty 26–128（≈0°–≈180°，findings D3 近似）',
+        '    duty = int(v / 65535 * 102) + 26',
+        '    duty = max(26, min(128, duty))',
+        '    servo.duty(duty)',
+        '    print("ADC:", v, "DUTY:", duty)',
+        '    time.sleep_ms(50)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '  analogReadResolution(12);       // 12-bit ADC',
+        '  analogWriteFrequency(2, 50);    // 舵机 50Hz',
+        '  analogWrite(2, 19);             // 初始 duty8bit=19 → 10bit 76 ≈ 90°',
+        '}',
+        '',
+        '/* VP(GPIO36) 在 esp32:esp32 变体 pins_arduino.h 未提供宏（仅 lionbit 等板有），',
+        '   直接用数字 36，确保所有 DevKit 变体（esp32 / esp32-devkitc / esp32doit-devkit-v1…）',
+        '   arduino-cli compile 都能通过。ADC(Pin(36)) 引擎A也同一引脚编号对齐。 */',
+        '#ifndef VP',
+        '#define VP 36',
+        '#endif',
+        '',
+        'void loop() {',
+        '  int v = analogRead(VP);           // 0–4095',
+        '  int d8 = map(v, 0, 4095, 6, 32);  // 8-bit 0–255 → glue ×4 → 10-bit 24–128，覆盖≈0°–≈180°',
+        '  d8 = max(6, min(32, d8));',
+        '  analogWrite(2, d8);',
+        '  Serial.printf("ADC: %d DUTY8: %d\\n", v, d8);',
+        '  delay(50);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
 const BUILT_IN_EXAMPLES: Array<{
   id: string;
   name: string;
@@ -160,6 +337,18 @@ const BUILT_IN_EXAMPLES: Array<{
     name: 'button-led（按键控制 LED）',
     category: 'starter',
     manifest: BUTTON_LED_MANIFEST,
+  },
+  {
+    id: 'pwm-breath',
+    name: 'pwm-breath（PWM 呼吸灯）',
+    category: 'peripheral',
+    manifest: PWM_BREATH_MANIFEST,
+  },
+  {
+    id: 'servo-pot',
+    name: 'servo-pot（电位器控舵机角度）',
+    category: 'peripheral',
+    manifest: SERVO_POT_MANIFEST,
   },
 ];
 

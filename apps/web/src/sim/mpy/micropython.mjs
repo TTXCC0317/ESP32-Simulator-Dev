@@ -5097,6 +5097,8 @@ function js_gpio_configure(pin,mode,pull) { const bridge = globalThis.__mpyMachi
 function js_uart_tx(port,data,len) { const bridge = globalThis.__mpyMachine; if (bridge && bridge.uartWrite && len > 0) { bridge.uartWrite(port, HEAPU8.slice(data, data + len)); } }
 function js_uart_rx(port,buf,maxlen) { const bridge = globalThis.__mpyMachine; if (!bridge || !bridge.uartRead || maxlen <= 0) return 0; const bytes = bridge.uartRead(port, maxlen); if (!bytes || !bytes.length) return 0; const n = Math.min(bytes.length, maxlen); HEAPU8.set(bytes.subarray(0, n), buf); return n; }
 function js_uart_rx_avail(port) { const bridge = globalThis.__mpyMachine; return bridge && bridge.uartAvailable ? bridge.uartAvailable(port) : 0; }
+function js_pwm_write(pin,duty,freq) { const bridge = globalThis.__mpyMachine; if (bridge && bridge.pwmWrite) bridge.pwmWrite(pin, duty, freq); }
+function js_adc_read(pin) { const bridge = globalThis.__mpyMachine; return bridge && bridge.adcRead ? bridge.adcRead(pin) : 0; }
 
 // Imports from the Wasm binary.
 var _mp_sched_keyboard_interrupt = Module['_mp_sched_keyboard_interrupt'] = makeInvalidEarlyAccess('_mp_sched_keyboard_interrupt');
@@ -5304,6 +5306,8 @@ var wasmImports = {
   /** @export */
   invoke_viiii,
   /** @export */
+  js_adc_read,
+  /** @export */
   js_check_existing,
   /** @export */
   js_get_error_info,
@@ -5319,6 +5323,8 @@ var wasmImports = {
   js_gpio_write,
   /** @export */
   js_iter_next,
+  /** @export */
+  js_pwm_write,
   /** @export */
   js_reflect_construct,
   /** @export */

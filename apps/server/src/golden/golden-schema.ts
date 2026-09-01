@@ -23,27 +23,44 @@ export const goldenInputEventSchema = z.object({
   release: z.boolean().optional(),
 });
 
-export const goldenScriptSchema = z.object({
-  exampleId: z.string().min(1),
-  /** 串口采集时长（ms）；引擎A 为运行时长 */
-  durationMs: z.number().int().min(1000).max(60_000),
-  /** 输入注入序列（M5；按 atMs 调度，双引擎同源） */
-  input: z.array(goldenInputEventSchema).optional(),
-  expect: z.object({
-    /** 串口行按此序列循环输出，采集窗口内完整循环 ≥2 轮 */
-    serialCycle: z.array(z.string()).min(1),
-    /** GPIO 电平断言（两引擎：置高/置低次数计数） */
-    gpio: z
+export const goldenScriptSchema = z
+  .object({
+    exampleId: z.string().min(1),
+    /** 串口采集时长（ms）；引擎A 为运行时长 */
+    durationMs: z.number().int().min(1000).max(60_000),
+    /** 输入注入序列（M5；按 atMs 调度，双引擎同源） */
+    input: z.array(goldenInputEventSchema).optional(),
+    expect: z
       .object({
-        pin: z.number().int().nonnegative(),
-        /** 置高次数（≥2：blink 至少两轮闪烁） */
-        highs: z.number().int().positive(),
-        /** 置低次数 */
-        lows: z.number().int().positive(),
+        /** 串口行按此序列循环输出，采集窗口内完整循环 ≥2 轮；与 serialContainsAll 二选一（或都给） */
+        serialCycle: z.array(z.string()).min(1).optional(),
+        /** 串口行中必须全部出现过的子串列表（每行独立 include 判断）；与 serialCycle 二选一（或都给） */
+        serialContainsAll: z.array(z.string()).min(1).optional(),
+        /** GPIO 电平/PWM 断言（两引擎：置高/置低次数、PWM duty 事件计数） */
+        gpio: z
+          .object({
+            pin: z.number().int().nonnegative(),
+            /** 置高次数（≥2：blink 至少两轮闪烁） */
+            highs: z.number().int().positive().optional(),
+            /** 置低次数 */
+            lows: z.number().int().positive().optional(),
+            /** PWM duty 写入事件最少次数（M7 pwm-breath 断言：duty 更新回调 ≥N 次） */
+            minPwm: z.number().int().nonnegative().optional(),
+          })
+          .strict()
+          .refine(
+            (g) => g.highs !== undefined || g.lows !== undefined || g.minPwm !== undefined,
+            'gpio 断言至少需要 highs/lows/minPwm 中的一个字段',
+          )
+          .optional(),
       })
-      .optional(),
-  }),
-});
+      .strict()
+      .refine(
+        (e) => e.serialCycle !== undefined || e.serialContainsAll !== undefined,
+        'expect 必须提供 serialCycle 或 serialContainsAll 至少一项',
+      ),
+  })
+  .strict();
 
 export type GoldenScript = z.infer<typeof goldenScriptSchema>;
 export type GoldenInputEvent = z.infer<typeof goldenInputEventSchema>;
@@ -57,7 +74,7 @@ export interface GoldenResult {
   /** 串口采集（行数组） */
   serialLines: string[];
   /** GPIO 实际计数（expect.gpio 或 input 存在时） */
-  gpio?: { pin: number; highs: number; lows: number };
+  gpio?: { pin: number; highs: number; lows: number; pwmWrites: number };
   /** 失败原因（ok=false 时） */
   error?: string;
 }

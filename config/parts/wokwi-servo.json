@@ -1,0 +1,24 @@
+{
+  "type": "wokwi-servo",
+  "name": "舵机 SG90",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "GND", "role": "gnd", "x": 24, "y": 88 },
+    { "name": "VCC", "role": "power", "x": 48, "y": 88 },
+    { "name": "PWM", "role": "pwm", "x": 72, "y": 88 }
+  ],
+  "attrs": [
+    {
+      "key": "initialAngle",
+      "type": "number",
+      "label": "初始角度 (°)",
+      "default": 90,
+      "min": 0,
+      "max": 180,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-servo.svg", "width": 96, "height": 88 },
+  "simulator": { "listens": ["pwm.duty"], "behavior": "servo-sg90" }
+}

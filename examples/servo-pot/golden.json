@@ -1,0 +1,8 @@
+{
+  "exampleId": "servo-pot",
+  "durationMs": 6000,
+  "input": [],
+  "expect": {
+    "serialContainsAll": ["ADC:", "DUTY"]
+  }
+}

@@ -128,6 +128,8 @@ export async function runGoldenEngineA(
     if (text.trim()) lines.push(text.trim());
   };
   const gpio = new Map<number, { highs: number; lows: number }>();
+  /** 各引脚 PWM duty 写入事件计数（M7 pwm-breath 断言） */
+  const pwmWrites = new Map<number, number>();
   /** input 序列注入表（GPIO → 电平）；release 清除后回退 pull 记录 */
   const injected = new Map<number, 0 | 1>();
   /** Pin(n, Pin.IN, pull) 的 pull 电平记录（gpioConfigure 上报；none→0） */
@@ -141,6 +143,10 @@ export async function runGoldenEngineA(
       if (level) c.highs += 1;
       else c.lows += 1;
       gpio.set(pin, c);
+    },
+    /** PWM(pin, freq, duty) 回调（machine shim js_pwm_write 透传；web engine.ts 已用） */
+    pwmWrite: (pin: number, _duty: number, _freq: number): void => {
+      pwmWrites.set(pin, (pwmWrites.get(pin) ?? 0) + 1);
     },
     gpioRead: (pin: number): number => injected.get(pin) ?? pulls.get(pin) ?? 0,
     // Pin(n, Pin.IN, pull) 构造上报（machine.c js_gpio_configure）：记录 pull 电平
@@ -235,28 +241,52 @@ export async function runGoldenEngineA(
   }
   if (uartBuf.trim()) lines.push(uartBuf.trim());
 
-  // 5) 断言：serialCycle ≥2 轮 + gpio 计数（≥ 容差，02-§3.2）
-  const serialOk = assertSerialCycle(lines, script.expect.serialCycle, 2);
+  // 5) 断言：serialCycle ≥2 轮 / serialContainsAll 全匹配 + gpio 计数（含 minPwm，02-§3.2 M7）
+  const serialCycleOk =
+    script.expect.serialCycle === undefined
+      ? true
+      : assertSerialCycle(lines, script.expect.serialCycle, 2);
+  const serialContainsOk =
+    script.expect.serialContainsAll === undefined
+      ? true
+      : assertSerialContainsAll(lines, script.expect.serialContainsAll);
+  const serialOk = serialCycleOk && serialContainsOk;
   let gpioOk = true;
   let gpioDetail = '';
   let gpioActual: GoldenResult['gpio'];
   if (script.expect.gpio) {
-    const { pin, highs, lows } = script.expect.gpio;
+    const { pin, highs, lows, minPwm } = script.expect.gpio;
     const c = gpio.get(pin) ?? { highs: 0, lows: 0 };
-    gpioOk = c.highs >= highs && c.lows >= lows;
-    gpioActual = { pin, highs: c.highs, lows: c.lows };
-    gpioDetail = `；gpio pin${pin}: highs=${c.highs}(≥${highs}) lows=${c.lows}(≥${lows})`;
+    const pw = pwmWrites.get(pin) ?? 0;
+    const highsOk = highs === undefined ? true : c.highs >= highs;
+    const lowsOk = lows === undefined ? true : c.lows >= lows;
+    const pwmOk = minPwm === undefined ? true : pw >= minPwm;
+    gpioOk = highsOk && lowsOk && pwmOk;
+    gpioActual = { pin, highs: c.highs, lows: c.lows, pwmWrites: pw };
+    const parts: string[] = [];
+    if (highs !== undefined) parts.push(`highs=${c.highs}(≥${highs})`);
+    if (lows !== undefined) parts.push(`lows=${c.lows}(≥${lows})`);
+    if (minPwm !== undefined) parts.push(`pwmWrites=${pw}(≥${minPwm})`);
+    gpioDetail = `；gpio pin${pin}: ${parts.join(' ')}`;
   }
   const ok = serialOk && gpioOk;
+  const serialErrors: string[] = [];
+  if (!serialCycleOk && script.expect.serialCycle) {
+    serialErrors.push(`串口输出未出现「${script.expect.serialCycle.join('→')}」完整 2 轮`);
+  }
+  if (!serialContainsOk && script.expect.serialContainsAll) {
+    const missing = script.expect.serialContainsAll.filter(
+      (s) => !lines.some((l) => l.includes(s)),
+    );
+    serialErrors.push(`串口缺少子串：${missing.join(', ')}（已采集 ${lines.length} 行）`);
+  }
   return {
     engine: 'micropython-wasm',
     exampleId: script.exampleId,
     ok,
     serialLines: lines,
     gpio: gpioActual,
-    error: ok
-      ? undefined
-      : `${serialOk ? '' : `串口输出未出现「${script.expect.serialCycle.join('→')}」完整 2 轮`}${gpioDetail}`,
+    error: ok ? undefined : `${serialErrors.join('；')}${gpioDetail}`,
   };
 }
 
@@ -326,6 +356,8 @@ export async function runGoldenEngineB(
   // 3) 运行窗口：GPIO 桥（expect.gpio / input 需要时）+ 串口采集 + input 序列注入
   const lines: string[] = [];
   const gpioCounts = new Map<number, { highs: number; lows: number }>();
+  /** 各引脚 PWM duty 写入事件计数（引擎B：桥 PWM_WRITE 帧，M7 pwm-breath 断言） */
+  const pwmCounts = new Map<number, number>();
   /** 固件 PIN_MODE 上报的 pull 电平（release 回退用，05-§1.4） */
   const pinPull = new Map<number, 0 | 1>();
   const recordWrite = (pin: number, level: 0 | 1): void => {
@@ -333,6 +365,9 @@ export async function runGoldenEngineB(
     if (level) c.highs += 1;
     else c.lows += 1;
     gpioCounts.set(pin, c);
+  };
+  const recordPwm = (pin: number, _duty: number): void => {
+    pwmCounts.set(pin, (pwmCounts.get(pin) ?? 0) + 1);
   };
   const needGpio = script.expect.gpio !== undefined || (script.input?.length ?? 0) > 0;
   const timers: NodeJS.Timeout[] = [];
@@ -385,6 +420,7 @@ export async function runGoldenEngineB(
         panicked = false;
         lines.length = 0;
         gpioCounts.clear();
+        pwmCounts.clear();
         pinPull.clear();
         for (const t of timers) clearTimeout(t);
         timers.length = 0;
@@ -405,6 +441,10 @@ export async function runGoldenEngineB(
             },
             onPinMode: (pin, mode) => {
               for (const cb of modeSubs) cb(pin, mode);
+            },
+            onPwmWrite: (pin, duty) => recordPwm(pin, duty),
+            onPwmFreq: () => {
+              /* PWM_FREQ 事件当前 golden 未断言，M7 暂不采集 */
             },
           });
           channel = {
@@ -488,28 +528,54 @@ export async function runGoldenEngineB(
     for (const t of timers) clearTimeout(t);
   }
 
-  // 4) 断言：serialCycle ≥2 轮 + gpio 计数（M5 两引擎，02-§3.2）
-  const serialOk = assertSerialCycle(lines, script.expect.serialCycle, 2);
+  // 4) 断言：serialCycle ≥2 轮 / serialContainsAll 全匹配 + gpio 计数（含 minPwm，M7 02-§3.2）
+  const serialCycleOk =
+    script.expect.serialCycle === undefined
+      ? true
+      : assertSerialCycle(lines, script.expect.serialCycle, 2);
+  const serialContainsOk =
+    script.expect.serialContainsAll === undefined
+      ? true
+      : assertSerialContainsAll(lines, script.expect.serialContainsAll);
+  const serialOk = serialCycleOk && serialContainsOk;
   let gpioOk = true;
   let gpioDetail = '';
   let gpioActual: GoldenResult['gpio'];
   if (script.expect.gpio) {
-    const { pin, highs, lows } = script.expect.gpio;
+    const { pin, highs, lows, minPwm } = script.expect.gpio;
     const c = gpioCounts.get(pin) ?? { highs: 0, lows: 0 };
-    gpioOk = c.highs >= highs && c.lows >= lows;
-    gpioActual = { pin, highs: c.highs, lows: c.lows };
-    gpioDetail = `；gpio pin${pin}: highs=${c.highs}(≥${highs}) lows=${c.lows}(≥${lows})`;
+    const pw = pwmCounts.get(pin) ?? 0;
+    const highsOk = highs === undefined ? true : c.highs >= highs;
+    const lowsOk = lows === undefined ? true : c.lows >= lows;
+    const pwmOk = minPwm === undefined ? true : pw >= minPwm;
+    gpioOk = highsOk && lowsOk && pwmOk;
+    gpioActual = { pin, highs: c.highs, lows: c.lows, pwmWrites: pw };
+    const parts: string[] = [];
+    if (highs !== undefined) parts.push(`highs=${c.highs}(≥${highs})`);
+    if (lows !== undefined) parts.push(`lows=${c.lows}(≥${lows})`);
+    if (minPwm !== undefined) parts.push(`pwmWrites=${pw}(≥${minPwm})`);
+    gpioDetail = `；gpio pin${pin}: ${parts.join(' ')}`;
   }
   const ok = serialOk && gpioOk;
+  const serialErrors: string[] = [];
+  if (!serialCycleOk && script.expect.serialCycle) {
+    serialErrors.push(
+      `串口输出未出现「${script.expect.serialCycle.join('→')}」完整 2 轮（已采集 ${lines.length} 行）`,
+    );
+  }
+  if (!serialContainsOk && script.expect.serialContainsAll) {
+    const missing = script.expect.serialContainsAll.filter(
+      (s) => !lines.some((l) => l.includes(s)),
+    );
+    serialErrors.push(`串口缺少子串：${missing.join(', ')}（已采集 ${lines.length} 行）`);
+  }
   return {
     engine: 'qemu-remote',
     exampleId: script.exampleId,
     ok,
     serialLines: lines,
     gpio: gpioActual,
-    error: ok
-      ? undefined
-      : `${serialOk ? '' : `串口输出未出现「${script.expect.serialCycle.join('→')}」完整 2 轮（已采集 ${lines.length} 行）`}${gpioDetail}`,
+    error: ok ? undefined : `${serialErrors.join('；')}${gpioDetail}`,
   };
 }
 
@@ -530,4 +596,10 @@ export function assertSerialCycle(lines: string[], cycle: string[], want: number
     }
   }
   return matched && rounds >= want;
+}
+
+/** 串口行中每个 needles 子串至少出现过一次（任意行、任意顺序，M7 servo-pot 用） */
+export function assertSerialContainsAll(lines: string[], needles: string[]): boolean {
+  if (needles.length === 0) return true;
+  return needles.every((s) => lines.some((l) => l.includes(s)));
 }

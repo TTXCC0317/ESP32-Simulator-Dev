@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config/loader';
 import { openDatabase } from '../db/client';
 import { runMigrations } from '../db/migrator';
+import { cleanupOrphanedBuildDirs } from '../services/build.service';
 import { runGoldenEngineA, runGoldenEngineB, loadGoldenScript } from './runner';
 import type { GoldenEngine, GoldenResult } from './golden-schema';
 
@@ -72,6 +73,9 @@ async function main(): Promise<void> {
   const config = loadConfig(join(REPO_ROOT, 'config', 'app.json'));
   const db = openDatabase({ path: ':memory:', wal: false });
   runMigrations(db);
+  // 内存库启动时无任何 build 行，data/builds/ 下的 bld-* 全是孤儿；
+  // 不清理则 enforceQuota 的 total 修复后虽不误删新产物，但孤儿持续占空间（~2GB 残留）。
+  cleanupOrphanedBuildDirs(config, db);
   try {
     if (engine === 'micropython-wasm' || engine === 'both') {
       const r = await runGoldenEngineA(script, { db });

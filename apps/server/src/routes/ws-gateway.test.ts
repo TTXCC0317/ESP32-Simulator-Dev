@@ -588,17 +588,24 @@ function makeGpioCircuit(): unknown {
   };
 }
 
-/** 提取帧有效载荷 [type, pin, value]（5 字节定长） */
+/** 提取帧有效载荷 [type, pin, value16]（6 字节定长，vH/vL 组合 16 位值） */
 function framePayloads(buf: Buffer): Array<[number, number, number]> {
   const out: Array<[number, number, number]> = [];
-  for (let i = 0; i + 4 < buf.length; i += 5) {
-    out.push([buf[i + 1] as number, buf[i + 2] as number, buf[i + 3] as number]);
+  for (let i = 0; i + 6 <= buf.length; i += 6) {
+    const type = buf[i + 1] as number;
+    const pin = buf[i + 2] as number;
+    const vH = buf[i + 3] as number;
+    const vL = buf[i + 4] as number;
+    out.push([type, pin, ((vH & 0xff) << 8) | (vL & 0xff)]);
   }
   return out;
 }
 
 function bridgeFrame(type: number, pin: number, value: number): Buffer {
-  return Buffer.from([0xa5, type, pin, value, (0xa5 ^ type ^ pin ^ value) & 0xff]);
+  const vH = (value >> 8) & 0xff;
+  const vL = value & 0xff;
+  const xor = 0xa5 ^ type ^ pin ^ vH ^ vL;
+  return Buffer.from([0xa5, type, pin, vH, vL, xor & 0xff]);
 }
 
 describe('WS 网关 GPIO 桥（M5，03-§7.2）', () => {

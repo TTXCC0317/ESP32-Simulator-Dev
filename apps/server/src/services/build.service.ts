@@ -2,8 +2,10 @@ import { execa, type ResultPromise } from 'execa';
 import {
   copyFileSync,
   cpSync,
+  existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -236,6 +238,7 @@ export class BuildService {
       mkdirSync(dir, { recursive: true });
       const srcDir = this.writeSources(buildId, dir);
       const outDir = join(dir, 'build');
+      mkdirSync(outDir, { recursive: true });
 
       // config.tools.* 允许相对路径（锚定仓库根 appRoot，.tools/ 不随 cwd 变化）；
       // spawn 的 cwd 是构建目录，相对路径必须在 spawn 前 resolve 为绝对路径
@@ -244,11 +247,13 @@ export class BuildService {
       const esptool = resolve(appRoot(), this.config.tools.esptool);
 
       // 1) arduino-cli compile（超时由 runner 的 timeoutMs 强杀）
-      //    GPIO 桥拦截走 glue 强符号覆盖（03-§7.2 M5），编译命令无需注入
+      //    GPIO 桥拦截走 glue 强符号覆盖（03-§7.2 M5），编译命令无需注入；
+      //    M7 沙箱三保险：defaultRunner 会基于 ['compile',...] 自动前置
+      //    --config-file + 追加 --build-path（= outDir），并提前 mkdir。
       let lines = 0;
       const compile = await this.run(
         arduinoCli,
-        ['compile', '--fqbn', tc.fqbn, '--output-dir', outDir, srcDir],
+        ['compile', '--fqbn', tc.fqbn, '--output-dir', outDir, '-v', srcDir],
         {
           cwd: dir,
           timeoutMs: this.config.builds.timeoutMs,
@@ -261,7 +266,10 @@ export class BuildService {
         },
       );
       if (compile.exitCode !== 0) {
-        throw new Error(`arduino-cli 编译失败（exit=${compile.exitCode}），详见构建日志`);
+        // 末尾 40 行纳入错误消息（QEMU/Golden 失败报告常缺少具体行）
+        const tail = this.logBuffers.get(buildId) ?? [];
+        const tailMsg = tail.length > 0 ? `\n尾 40 行日志：\n${tail.slice(-40).join('\n')}` : '';
+        throw new Error(`arduino-cli 编译失败（exit=${compile.exitCode}），详见构建日志${tailMsg}`);
       }
 
       // 2) esptool merge_bin（N18 布局：bootloader 0x1000 / partitions 0x8000 / app 0x10000）
@@ -354,20 +362,27 @@ export class BuildService {
     for (const cb of this.listeners) cb(buildId, ev);
   }
 
-  /** 磁盘配额（06-§4.1）：超限从最旧 finished 构建清理到 0.9×quota（跳过 pinned） */
+  /** 磁盘配额（06-§4.1）：超限从最旧 finished 构建清理到 0.9×quota（跳过 pinned）
+   *
+   * 仅统计 DB 里有的 buildId 目录大小——孤儿目录（DB 无对应行）不参与配额，
+   * 否则 Golden CLI 用内存库时，历史残留的 bld-* 目录会让 total 虚高，
+   * 而 DB 里只有刚 submit 的一行 → enforceQuota 误删刚编译的产物。
+   * 孤儿目录由 cleanupOrphanedBuildDirs() 显式清理。 */
   private enforceQuota(): void {
     const root = resolve(process.cwd(), this.config.builds.dir);
-    let total = dirSize(root);
-    if (total <= this.config.builds.quotaMb * 1024 * 1024) return;
-
     const rows = this.db
       .prepare(
-        "SELECT id, artifact FROM builds WHERE status IN ('success','failed') AND pinned = 0 ORDER BY finished_at ASC",
+        "SELECT id, pinned FROM builds WHERE status IN ('success','failed') ORDER BY finished_at ASC",
       )
-      .all() as Array<{ id: string; artifact: string | null }>;
+      .all() as Array<{ id: string; pinned: number }>;
+    let total = 0;
+    for (const r of rows) total += dirSize(join(root, r.id));
+    if (total <= this.config.builds.quotaMb * 1024 * 1024) return;
+
     const target = this.config.builds.quotaMb * 1024 * 1024 * 0.9;
     for (const r of rows) {
       if (total <= target) break;
+      if (r.pinned === 1) continue;
       const d = join(root, r.id);
       const size = dirSize(d);
       rmSync(d, { recursive: true, force: true });
@@ -401,7 +416,128 @@ function dirSize(dir: string): number {
   return size;
 }
 
-/** 生产 runner：execa + stdout/stderr 合流按行回调（超时进程被 execa 强杀并 reject） */
+/** 清理孤儿构建目录（data/builds/ 下不在 DB 的 bld-* 目录，对齐 QemuManager.cleanupOrphanedDirs）
+ *
+ * Golden CLI 用内存库启动时，所有文件系统残留的 bld-* 都是孤儿——若不清理，
+ * enforceQuota 修复后虽不会误删 DB 里的新产物，但孤儿目录会持续占空间。
+ * dev server 场景 DB 持久，孤儿目录较少（仅异常退出残留），可按需调用。
+ * 返回清理的目录数。 */
+export function cleanupOrphanedBuildDirs(config: AppConfig, db: Db): number {
+  const root = resolve(process.cwd(), config.builds.dir);
+  if (!existsSync(root)) return 0;
+  const dbIds = new Set(
+    (db.prepare('SELECT id FROM builds').all() as Array<{ id: string }>).map((r) => r.id),
+  );
+  let removed = 0;
+  for (const name of readdirSync(root)) {
+    if (!name.startsWith('bld-')) continue;
+    if (dbIds.has(name)) continue;
+    try {
+      rmSync(join(root, name), { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // 单个目录失败不影响其余（下次重试）
+    }
+  }
+  return removed;
+}
+
+/** 工具链目录（仓库内 data/，06-§6 允许写入，含 arduino-cli user/data/staging） */
+const TOOLCHAIN_DATA_DIR = resolve(appRoot(), 'data', 'arduino');
+const ARDUINO_USER_DIR = join(TOOLCHAIN_DATA_DIR, 'user');
+const ARDUINO_DATA_DIR = join(TOOLCHAIN_DATA_DIR, 'data');
+const ARDUINO_DOWNLOADS_DIR = join(TOOLCHAIN_DATA_DIR, 'staging');
+const ARDUINO_LIBS_DIR = join(ARDUINO_USER_DIR, 'libraries');
+const ARDUINO_CONFIG_FILE = join(ARDUINO_USER_DIR, 'cli.yaml');
+const ARDUINO_BUILD_CACHE_DIR = resolve(appRoot(), 'data', 'build-cache');
+
+/**
+ * 写出 arduino-cli 配置文件（一次）。ARDUINO_* 环境变量在部分本地版本（0.x/1.x）
+ * 静默不生效，导致 sketch 仍走 %LOCALAPPDATA% 缓存（沙箱 Access denied）；
+ * --config-file + YAML 显式落盘 + compile --build-cache-path/--build-path 三保险
+ * 让所有写操作（packages/staging/cache/build/sketches）全部在 data/ 目录内。
+ */
+function ensureArduinoConfig(): string {
+  mkdirSync(ARDUINO_USER_DIR, { recursive: true });
+  mkdirSync(join(ARDUINO_USER_DIR, 'sketches'), { recursive: true });
+  mkdirSync(ARDUINO_DATA_DIR, { recursive: true });
+  mkdirSync(ARDUINO_DOWNLOADS_DIR, { recursive: true });
+  mkdirSync(ARDUINO_LIBS_DIR, { recursive: true });
+  mkdirSync(ARDUINO_BUILD_CACHE_DIR, { recursive: true });
+  const yaml =
+    'directories:\n' +
+    `  user: "${ARDUINO_USER_DIR.split('\\').join('\\\\')}"\n` +
+    `  data: "${ARDUINO_DATA_DIR.split('\\').join('\\\\')}"\n` +
+    `  downloads: "${ARDUINO_DOWNLOADS_DIR.split('\\').join('\\\\')}"\n` +
+    `  builtin_libraries: "${ARDUINO_LIBS_DIR.split('\\').join('\\\\')}"\n`;
+  const existing = (() => {
+    try {
+      return readFileSync(ARDUINO_CONFIG_FILE, 'utf8');
+    } catch {
+      return null;
+    }
+  })();
+  if (existing !== yaml) writeFileSync(ARDUINO_CONFIG_FILE, yaml, 'utf8');
+  return ARDUINO_CONFIG_FILE;
+}
+
+/** arduino-cli compile 的前置参数：--config-file YAML + --build-path 锚定到
+ * data/builds/<id>/build（outDir）。调用方保持 compile 子命令参数不变，我们把目录控制
+ * flags 直接拼在命令前面，兼容测试 runner（注入时 file = 'arduino-fake' 不走实逻辑）。
+ *
+ * ⚠️ 不使用已弃用 flag --build-cache-path：arduino-cli 1.x 将 build cache 与 build-path
+ * 合二为一；用户目录/cache 由 YAML 的 directories.user 接管。
+ */
+function prependArduinoCompileFlags(args: readonly string[], buildDir: string): string[] {
+  if (args[0] !== 'compile') return [...args];
+  const out = args.indexOf('--output-dir');
+  // args[out+1] 可能 undefined（out=-1 或 out=args.length-1），fallback 到
+  // buildDir/build；显式 as string 收紧类型，消除 mkdirSync / 返回数组 TS2322。
+  const artifactDir =
+    (out !== -1 && out + 1 < args.length ? (args[out + 1] as string) : undefined) ??
+    join(buildDir, 'build');
+  // ⚠️ 目录必须真实存在：arduino-cli 即使传 --build-path，仍会在
+  // directories.user/sketches/<hash> 起临时 build 目录（不可关闭），
+  // 因此 ensureArduinoConfig() 需一并创建 sketches 根。
+  ensureArduinoConfig();
+  mkdirSync(join(ARDUINO_USER_DIR, 'sketches'), { recursive: true });
+  mkdirSync(artifactDir, { recursive: true });
+  // M7 引擎B glue analogWrite/analogWriteFrequency 提供同名强定义覆盖 core
+  // 实现（esp32 core 3.3.10 esp32-hal-ledc.c 中该两符号非 weak alias，与 glue
+  // 冲突会报 multiple definition）。用 --allow-multiple-definition 允许链接器取
+  // 首个定义（sketch 的 esp32sim_bridge.c.o 排在 core.a 前，因此生效 glue）。
+  return [
+    '--config-file',
+    ARDUINO_CONFIG_FILE,
+    'compile',
+    ...args.slice(1),
+    '--build-path',
+    artifactDir,
+    '--build-property',
+    'compiler.c.elf.extra_flags=-Wl,--allow-multiple-definition',
+  ];
+}
+
+/** 生产 runner：execa + stdout/stderr 合流按行回调（超时进程被 execa 强杀并 reject）
+ *
+ * ⚠️ ARDUINO 目录隔离（M7 补丁）：Trae 沙箱与部分受控环境拒绝写入
+ * `%LOCALAPPDATA%\Arduino15` / `%LOCALAPPDATA%\arduino\sketches` 下的 cache /
+ * sketch 哈希目录。三保险：(1) --config-file YAML 落盘 directories.* 到 data/arduino/；
+ * (2) compile 追加 --build-cache-path + --build-path（data/build-cache 与 data/builds/<id>/build）；
+ * (3) 进程 env 也同步 ARDUINO_DIRECTORIES_*（作为未来新版 fallback）。以上仍受
+ * 06-§6 data/ 目录统一路径穿越限制。
+ */
+function arduinoEnv(): NodeJS.ProcessEnv {
+  ensureArduinoConfig();
+  return {
+    ...process.env,
+    ARDUINO_DIRECTORIES_USER: ARDUINO_USER_DIR,
+    ARDUINO_DIRECTORIES_DATA: ARDUINO_DATA_DIR,
+    ARDUINO_DIRECTORIES_DOWNLOADS: ARDUINO_DOWNLOADS_DIR,
+    ARDUINO_DIRECTORIES_BUILTIN_LIBRARIES: ARDUINO_LIBS_DIR,
+  };
+}
+
 const defaultRunner: BuildRunner = async (file, args, opts) => {
   let lineBuf = '';
   const onChunk = (chunk: Buffer | string): void => {
@@ -411,12 +547,15 @@ const defaultRunner: BuildRunner = async (file, args, opts) => {
     for (const line of parts) if (line) opts.onLine(line);
   };
 
-  const child: ResultPromise = execa(file, args, {
+  const isArduino = file.includes('arduino-cli');
+  const resolvedArgs = isArduino ? prependArduinoCompileFlags(args, opts.cwd) : [...args];
+  const child: ResultPromise = execa(file, resolvedArgs, {
     cwd: opts.cwd,
     timeout: opts.timeoutMs,
     killSignal: 'SIGKILL',
     buffer: false,
     reject: false,
+    env: isArduino ? arduinoEnv() : process.env,
   });
   child.stdout?.on('data', onChunk);
   child.stderr?.on('data', onChunk);

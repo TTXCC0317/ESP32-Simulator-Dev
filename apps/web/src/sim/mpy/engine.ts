@@ -321,6 +321,22 @@ export class MpyWasmEngine implements SimulationEngine {
         return out;
       },
       uartAvailable: (port: number): number => this.rxQueue.get(port)?.length ?? 0,
+      pwmWrite: (pin: number, duty: number, freq: number): void => {
+        const ref = this.gpioRefs.get(pin);
+        if (!ref) {
+          this.log('warn', `PWM pin ${pin} 不在板卡引脚表内，忽略`);
+          return;
+        }
+        const clampedDuty = Math.max(0, Math.min(1023, duty));
+        const clampedFreq = Math.max(1, freq);
+        this.bus.pwm(ref, clampedDuty, clampedFreq);
+        this.emit('pwm.duty', { pin, duty: clampedDuty, freq: clampedFreq });
+      },
+      adcRead: (pin: number): number => {
+        const ref = this.gpioRefs.get(pin);
+        if (!ref) return 0;
+        return this.bus.adcRead(ref) ?? 0;
+      },
     };
     (globalThis as unknown as Record<string, unknown>).__mpyMachine = bridge;
 

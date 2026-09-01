@@ -105,3 +105,27 @@ export function toggleSwitch(partId: string, position: '1' | '2'): void {
     release({ partId, pin: signal });
   }
 }
+
+/**
+ * 电位器 value 改变（05-§1.6 电位器行为，M7）：
+ * - VCC 网络需有 power 语义、GND 网络需有 gnd 语义；未接电源则不注入且返回 false（上层显示提示）
+ * - valuePercent: 0–100（来自 attrs.value）→ 注入值 = round(valuePercent / 100 * 4095)
+ * - SIG 引脚 = "SIG"（引脚名由 part JSON 定义固定，候选引脚 "SIG"）
+ * 返回 true 表示注入成功（VCC/GND 已正确接），false 表示未接电源
+ */
+export function setPotentiometerValue(partId: string, valuePercent: number): boolean {
+  if (!runtimeActive()) return false;
+  const net = netMap();
+  const vccRole = net.netRoleOf(`${partId}:VCC` as PinRef);
+  const gndRole = net.netRoleOf(`${partId}:GND` as PinRef);
+  // 电源校验：VCC 必须可达 power 网络；GND 必须可达 gnd 网络；否则不注入
+  if (vccRole !== 'power' || gndRole !== 'gnd') return false;
+  const sigRef = `${partId}:SIG`;
+  // net-map 校验 SIG 引脚存在（避免 typo），否则 false
+  if (net.gpioOf(sigRef as PinRef) === null && net.netRoleOf(sigRef as PinRef) === null)
+    return false;
+  const clamped = Math.max(0, Math.min(100, valuePercent));
+  const value = Math.round((clamped / 100) * 4095);
+  emit({ type: 'analog.value', partId, pin: 'SIG', value });
+  return true;
+}
