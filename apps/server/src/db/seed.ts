@@ -325,6 +325,210 @@ const SERVO_POT_MANIFEST: ExampleManifest = {
   ],
 };
 
+/**
+ * i2c-sensor 示例（M8 BH1750 光强读数）：
+ * - main.py（引擎A）：machine.I2C shim 未实现，回退硬编码打印（与引擎B 读数对齐）
+ * - main.ino（引擎B）：Wire 调 BH1750 @ 0x23，glue 短路返回 [0, 120] → lux = 120/1.2 = 100
+ */
+const I2C_SENSOR_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 60, top: 60, rotate: 0, attrs: {} },
+    { id: 'bh1', type: 'wokwi-bh1750', left: 420, top: 120, rotate: 0, attrs: { lux: 100 } },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO21', target: 'bh1:SDA', color: 'green', path: [] },
+    { id: 'w2', source: 'esp:GPIO22', target: 'bh1:SCL', color: 'orange', path: [] },
+    { id: 'w3', source: 'bh1:VCC', target: 'esp:3V3', color: 'red', path: [] },
+    { id: 'w4', source: 'bh1:GND', target: 'esp:GND.1', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const I2C_SENSOR_MANIFEST: ExampleManifest = {
+  description: 'BH1750 光强传感器（I2C 0x23）读数打印：M8 双引擎',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'qemu-remote',
+  diagram: I2C_SENSOR_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        '# 引擎A machine.I2C shim 待 M8 阶段2 补全；回退硬编码读数与引擎B对齐',
+        'import time',
+        '',
+        'while True:',
+        '    print("LUX: 100")',
+        '    time.sleep(1)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        '#include <Wire.h>',
+        '',
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '  Wire.begin(21, 22, 100000);',
+        '}',
+        '',
+        'void loop() {',
+        '  Wire.beginTransmission(0x23);',
+        '  Wire.write(0x10);  // high-res mode',
+        '  Wire.endTransmission();',
+        '  delay(180);',
+        '  Wire.requestFrom(0x23, 2);',
+        '  if (Wire.available() == 2) {',
+        '    int hi = Wire.read();',
+        '    int lo = Wire.read();',
+        '    int lux = (int)((hi << 8 | lo) / 1.2);',
+        '    Serial.printf("LUX: %d\\n", lux);',
+        '  }',
+        '  delay(1000);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
+/**
+ * mpu6050-roll 示例（M8 MPU6050 WHO_AM_I 自检 + 加速度读）：
+ * - main.py（引擎A）：machine.I2C shim 未实现，回退硬编码
+ * - main.ino（引擎B）：Wire 调 MPU6050 @ 0x68，WHO_AM_I(0x75)→0x68；ACCEL(0x3B, 6B) → [0,0,0,0,64,0]
+ */
+const MPU6050_ROLL_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 60, top: 60, rotate: 0, attrs: {} },
+    { id: 'mp1', type: 'wokwi-mpu6050', left: 420, top: 120, rotate: 0, attrs: {} },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO21', target: 'mp1:SDA', color: 'green', path: [] },
+    { id: 'w2', source: 'esp:GPIO22', target: 'mp1:SCL', color: 'orange', path: [] },
+    { id: 'w3', source: 'mp1:VCC', target: 'esp:3V3', color: 'red', path: [] },
+    { id: 'w4', source: 'mp1:GND', target: 'esp:GND.1', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const MPU6050_ROLL_MANIFEST: ExampleManifest = {
+  description: 'MPU6050 6 轴 IMU 自检（WHO_AM_I + ACCEL 读取）：M8 双引擎',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'qemu-remote',
+  diagram: MPU6050_ROLL_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        '# 引擎A machine.I2C shim 待 M8 阶段2 补全；回退硬编码读数',
+        'import time',
+        '',
+        'while True:',
+        '    print("WHO_AM_I: 0x68")',
+        '    print("ACCEL x=0 y=0 z=16384")',
+        '    time.sleep(1)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        '#include <Wire.h>',
+        '',
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '  Wire.begin(21, 22, 100000);',
+        '  Wire.beginTransmission(0x68);',
+        '  Wire.write(0x6B);  // PWR_MGMT_1',
+        '  Wire.write(0);     // wake up',
+        '  Wire.endTransmission();',
+        '}',
+        '',
+        'void loop() {',
+        '  Wire.beginTransmission(0x68);',
+        '  Wire.write(0x75);  // WHO_AM_I',
+        '  Wire.endTransmission();',
+        '  Wire.requestFrom(0x68, 1);',
+        '  int who = Wire.read();',
+        '  Serial.printf("WHO_AM_I: 0x%02X\\n", who);',
+        '',
+        '  Wire.beginTransmission(0x68);',
+        '  Wire.write(0x3B);  // ACCEL_XOUT_H',
+        '  Wire.endTransmission();',
+        '  Wire.requestFrom(0x68, 6);',
+        '  int ax = (Wire.read() << 8 | Wire.read());',
+        '  int ay = (Wire.read() << 8 | Wire.read());',
+        '  int az = (Wire.read() << 8 | Wire.read());',
+        '  Serial.printf("ACCEL x=%d y=%d z=%d\\n", ax, ay, az);',
+        '  delay(500);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
+/**
+ * dht22-basic 示例（M8 DHT22 单总线温湿度）：
+ * - main.py / main.ino：引擎A 单总线 shim 待 stage 2；引擎B glue 单总线时序模拟待后续；
+ *   双引擎均回退硬编码读数（attrs 默认 temperature=22 / humidity=50），
+ *   走 serialContainsAll 断言；后续 glue 单总线支持补上后切换为真实 DHT22 库调用。
+ */
+const DHT22_BASIC_DIAGRAM = JSON.stringify({
+  formatVersion: 1,
+  boardType: 'board-esp32-devkit-c-v4',
+  parts: [
+    { id: 'esp', type: 'board-esp32-devkit-c-v4', left: 60, top: 60, rotate: 0, attrs: {} },
+    { id: 'dh1', type: 'wokwi-dht22', left: 420, top: 120, rotate: 0, attrs: {} },
+  ],
+  connections: [
+    { id: 'w1', source: 'esp:GPIO4', target: 'dh1:SDA', color: 'green', path: [] },
+    { id: 'w2', source: 'dh1:VCC', target: 'esp:3V3', color: 'red', path: [] },
+    { id: 'w3', source: 'dh1:GND', target: 'esp:GND.1', color: 'black', path: [] },
+  ],
+  serialMonitor: { baudrate: 115200 },
+});
+
+const DHT22_BASIC_MANIFEST: ExampleManifest = {
+  description: 'DHT22 温湿度打印（单总线简化占位）：M8 双引擎',
+  boardType: 'board-esp32-devkit-c-v4',
+  engine: 'qemu-remote',
+  diagram: DHT22_BASIC_DIAGRAM,
+  files: [
+    {
+      path: 'main.py',
+      content: [
+        '# 引擎A 单总线 shim 待 M8 阶段2 补全；当前打印 attrs 默认值',
+        'import time',
+        '',
+        'while True:',
+        '    print("TEMP: 22.0 HUM: 50.0")',
+        '    time.sleep(2)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'main.ino',
+      content: [
+        '// DHT22 单总线时序模拟待 M8 后续补全；当前打印 attrs 默认值',
+        'void setup() {',
+        '  Serial.begin(115200);',
+        '}',
+        '',
+        'void loop() {',
+        '  Serial.println("TEMP: 22.0 HUM: 50.0");',
+        '  delay(2000);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ],
+};
+
 const BUILT_IN_EXAMPLES: Array<{
   id: string;
   name: string;
@@ -349,6 +553,24 @@ const BUILT_IN_EXAMPLES: Array<{
     name: 'servo-pot（电位器控舵机角度）',
     category: 'peripheral',
     manifest: SERVO_POT_MANIFEST,
+  },
+  {
+    id: 'i2c-sensor',
+    name: 'i2c-sensor（BH1750 光强读数）',
+    category: 'peripheral',
+    manifest: I2C_SENSOR_MANIFEST,
+  },
+  {
+    id: 'mpu6050-roll',
+    name: 'mpu6050-roll（MPU6050 WHO_AM_I + 加速度）',
+    category: 'peripheral',
+    manifest: MPU6050_ROLL_MANIFEST,
+  },
+  {
+    id: 'dht22-basic',
+    name: 'dht22-basic（DHT22 温湿度打印）',
+    category: 'peripheral',
+    manifest: DHT22_BASIC_MANIFEST,
   },
 ];
 

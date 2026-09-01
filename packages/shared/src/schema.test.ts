@@ -289,6 +289,85 @@ describe('partDefinitionSchema（03-§2.2）', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('M8: accepts i2c-device with registers (BH1750-like)', () => {
+    const bh1750 = {
+      type: 'wokwi-bh1750',
+      name: 'BH1750',
+      category: 'sensor',
+      defVersion: 1,
+      pins: [
+        { name: 'SDA', role: 'i2c.sda', x: 0, y: 0 },
+        { name: 'SCL', role: 'i2c.scl', x: 10, y: 0 },
+        { name: 'VCC', role: 'power', x: 0, y: 10 },
+        { name: 'GND', role: 'gnd', x: 10, y: 10 },
+      ],
+      attrs: [],
+      renderer: { asset: 'bh1750.svg', width: 32, height: 32 },
+      simulator: {
+        listens: ['i2c.txn'],
+        produces: ['sensor.data'],
+        behavior: 'i2c-device',
+        device: {
+          kind: 'i2c-device',
+          address: 0x23,
+          registers: [{ addr: 0x10, size: 2, decode: 'lux' }],
+        },
+      },
+    };
+    expect(partDefinitionSchema.safeParse(bh1750).success).toBe(true);
+  });
+
+  it('M8: accepts spi-device with csGpio', () => {
+    const spiDev = {
+      type: 'wokwi-spi-sensor',
+      name: 'SPI Sensor',
+      category: 'sensor',
+      defVersion: 1,
+      pins: [
+        { name: 'CS', role: 'spi.cs', x: 0, y: 0 },
+        { name: 'SCK', role: 'spi.sck', x: 10, y: 0 },
+        { name: 'MOSI', role: 'spi.mosi', x: 20, y: 0 },
+        { name: 'MISO', role: 'spi.miso', x: 30, y: 0 },
+      ],
+      attrs: [],
+      renderer: { asset: 'spi.svg', width: 32, height: 32 },
+      simulator: {
+        listens: ['spi.txn'],
+        behavior: 'spi-device',
+        device: {
+          kind: 'spi-device',
+          csGpio: 5,
+          registers: [{ addr: 0x9f, size: 4, decode: 'raw' }],
+        },
+      },
+    };
+    expect(partDefinitionSchema.safeParse(spiDev).success).toBe(true);
+  });
+
+  it('M8: rejects i2c-device with address > 0x7f', () => {
+    const bad = {
+      ...led,
+      simulator: {
+        listens: ['i2c.txn'],
+        behavior: 'i2c-device',
+        device: { kind: 'i2c-device', address: 0x80, registers: [] },
+      },
+    };
+    expect(partDefinitionSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it('M8: rejects device with unknown kind (discriminated union)', () => {
+    const bad = {
+      ...led,
+      simulator: {
+        listens: ['i2c.txn'],
+        behavior: 'i2c-device',
+        device: { kind: '1wire-device', address: 0x10, registers: [] },
+      },
+    };
+    expect(partDefinitionSchema.safeParse(bad).success).toBe(false);
+  });
 });
 
 describe('workerMsgSchema（03-§2.6）', () => {

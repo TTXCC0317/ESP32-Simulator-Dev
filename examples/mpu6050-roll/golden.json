@@ -1,0 +1,8 @@
+{
+  "exampleId": "mpu6050-roll",
+  "durationMs": 4000,
+  "input": [],
+  "expect": {
+    "serialContainsAll": ["WHO_AM_I: 0x68", "ACCEL"]
+  }
+}

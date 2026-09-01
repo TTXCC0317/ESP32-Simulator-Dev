@@ -74,15 +74,22 @@ const BOARD_TOOLCHAIN: Record<string, { fqbn: string; chip: string }> = {
 const ESTIMATE_LINES = 200;
 
 /**
- * M5 GPIO 桥（03-§7.2 HAL 方案）：glue 源文件随 sketch 一起编译
- * （tools/bridge-glue/esp32sim_bridge.c，无 core 污染）。
+ * M5/M8 GPIO+I2C/SPI 桥（03-§7.2.2 HAL 方案）：glue 源文件随 sketch 一起编译
+ * （tools/bridge-glue/esp32sim_bridge.{c,h} + bus_shim.cpp，无 core 污染）。
  *
  * 拦截机制为强符号覆盖：core 3.x 的 pinMode/digitalWrite 等是 __pinMode 等真实
  * 实现的 weak alias，glue 强定义公开符号即被链接器优先采用（含 core 内部引用），
  * 无需 -Wl,--wrap（wrap 只重定向 undefined reference，对 weak alias 定义静默失效，
  * M5 golden 实测踩坑）。
+ *
+ * M8：bus_shim.cpp 通过同 mangled name 强定义覆盖 TwoWire/SPIClass 成员函数
+ *（C++ 类成员函数非 weak alias、也无 __* 真实定义可转调），sketch 目标文件
+ * 先链接 + --allow-multiple-definition 让 shim 定义胜出；esp32sim_bridge.h 暴露
+ * br_i2c_txn / br_spi_txn C 接口供 shim 调用。
  */
 const BRIDGE_GLUE_SRC = 'esp32sim_bridge.c';
+const BRIDGE_GLUE_HDR = 'esp32sim_bridge.h';
+const BRIDGE_GLUE_SHIM = 'bus_shim.cpp';
 const BRIDGE_GLUE_DIR = resolve(appRoot(), 'tools', 'bridge-glue');
 
 interface BuildJob {
@@ -328,11 +335,13 @@ export class BuildService {
     for (const f of files) {
       writeFileSync(join(srcDir, basename(f.path)), f.content, 'utf8');
     }
-    // M5 GPIO 桥 glue 随 sketch 编译（缺失时编译命令仍下发，链接错误由日志暴露）
-    try {
-      copyFileSync(join(BRIDGE_GLUE_DIR, BRIDGE_GLUE_SRC), join(srcDir, BRIDGE_GLUE_SRC));
-    } catch {
-      this.appendLog(buildId, `[warn] GPIO 桥 glue 源缺失（${BRIDGE_GLUE_DIR}），跳过注入`);
+    // M5/M8 桥 glue + shim 随 sketch 编译（缺失时编译命令仍下发，链接错误由日志暴露）
+    for (const f of [BRIDGE_GLUE_SRC, BRIDGE_GLUE_HDR, BRIDGE_GLUE_SHIM]) {
+      try {
+        copyFileSync(join(BRIDGE_GLUE_DIR, f), join(srcDir, f));
+      } catch {
+        this.appendLog(buildId, `[warn] 桥源缺失（${f}），跳过注入`);
+      }
     }
     return srcDir;
   }

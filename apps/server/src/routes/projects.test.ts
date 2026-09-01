@@ -58,21 +58,25 @@ async function createProject(
 }
 
 describe('catalog 只读端点（01-§5.2）', () => {
-  it('GET /api/parts 返回 P1 全部 8 类元件且带引脚定义', async () => {
+  it('GET /api/parts 返回全部元件且带引脚定义（P1 8 类 + M8 I2C/SPI 设备）', async () => {
     const { app } = await buildTestApp();
     const res = await app.inject({ method: 'GET', url: '/api/parts' });
     expect(res.statusCode).toBe(200);
     const parts = res.json() as Array<{ type: string; category: string; pins: unknown[] }>;
     expect(parts.map((p) => p.type).sort()).toEqual([
       'board-esp32-devkit-c-v4',
+      'wokwi-bh1750',
       'wokwi-buzzer',
+      'wokwi-dht22',
       'wokwi-led',
+      'wokwi-mpu6050',
       'wokwi-potentiometer',
       'wokwi-pushbutton',
       'wokwi-resistor',
       'wokwi-rgb-led',
       'wokwi-servo',
       'wokwi-slide-switch',
+      'wokwi-w25q32',
     ]);
     for (const p of parts) expect(p.pins.length, p.type).toBeGreaterThan(0);
   });

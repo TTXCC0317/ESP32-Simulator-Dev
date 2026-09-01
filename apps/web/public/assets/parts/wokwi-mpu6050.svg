@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 128" width="96" height="128">
+  <!-- wokwi-mpu6050（M8 05-§4.1）：6轴加速度/陀螺仪，封装 96×128；引脚 VCC/GND/SCL/SDA/INT -->
+  <rect x="8" y="8" width="80" height="112" rx="6" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <rect x="20" y="28" width="56" height="40" rx="3" fill="#3b1d6b" stroke="#5a2f8a" stroke-width="1"/>
+  <text x="48" y="52" text-anchor="middle" font-size="9" fill="#9aa3b2">MPU6050</text>
+  <text x="48" y="88" text-anchor="middle" font-size="7" fill="#6b7280">6-DOF IMU</text>
+  <circle id="pin-VCC" cx="8" cy="8" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GND" cx="8" cy="32" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SCL" cx="8" cy="56" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SDA" cx="8" cy="80" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-INT" cx="8" cy="104" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

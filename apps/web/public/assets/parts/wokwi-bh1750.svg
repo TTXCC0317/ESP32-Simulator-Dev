@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <!-- wokwi-bh1750（M8 05-§4.1）：数字光强传感器，封装 96×96；引脚 VCC/GND/SCL/SDA -->
+  <rect x="8" y="8" width="80" height="80" rx="6" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <rect x="20" y="20" width="56" height="36" rx="3" fill="#0f3d6b" stroke="#1f5a8a" stroke-width="1"/>
+  <text x="48" y="42" text-anchor="middle" font-size="9" fill="#9aa3b2">BH1750</text>
+  <text x="48" y="76" text-anchor="middle" font-size="7" fill="#6b7280">LUX</text>
+  <circle id="pin-VCC" cx="8" cy="8" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GND" cx="8" cy="32" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SCL" cx="8" cy="56" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SDA" cx="8" cy="80" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

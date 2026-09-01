@@ -1,0 +1,38 @@
+{
+  "type": "wokwi-dht22",
+  "name": "DHT22 温湿度传感器",
+  "category": "sensor",
+  "defVersion": 1,
+  "pins": [
+    { "name": "VCC", "role": "power", "x": 30, "y": 114 },
+    { "name": "SDA", "role": "signal.io", "x": 46, "y": 114 },
+    { "name": "NC", "role": "passive", "x": 62, "y": 114 },
+    { "name": "GND", "role": "gnd", "x": 78, "y": 114 }
+  ],
+  "attrs": [
+    {
+      "key": "temperature",
+      "type": "number",
+      "label": "温度 (℃)",
+      "default": 22,
+      "min": -40,
+      "max": 80,
+      "step": 0.1
+    },
+    {
+      "key": "humidity",
+      "type": "number",
+      "label": "湿度 (%)",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 0.1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-dht22.svg", "width": 92, "height": 120 },
+  "simulator": {
+    "listens": [],
+    "produces": ["sensor.data"],
+    "behavior": "env-sensor"
+  }
+}

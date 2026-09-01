@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 144" width="96" height="144">
+  <!-- wokwi-w25q32（M8 05-§4.1）：SPI Flash 32Mbit，封装 96×144；引脚 VCC/GND/CS/SCK/MOSI/MISO -->
+  <rect x="8" y="8" width="80" height="128" rx="6" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <rect x="20" y="32" width="56" height="40" rx="3" fill="#1a4d2e" stroke="#2f7a45" stroke-width="1"/>
+  <text x="48" y="56" text-anchor="middle" font-size="9" fill="#9aa3b2">W25Q32</text>
+  <text x="48" y="96" text-anchor="middle" font-size="7" fill="#6b7280">SPI FLASH</text>
+  <text x="48" y="110" text-anchor="middle" font-size="6" fill="#6b7280">32Mbit</text>
+  <circle id="pin-VCC" cx="8" cy="8" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GND" cx="8" cy="32" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-CS" cx="8" cy="56" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SCK" cx="8" cy="80" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-MOSI" cx="8" cy="104" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-MISO" cx="8" cy="128" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

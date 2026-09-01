@@ -8,7 +8,13 @@ import { useSimStore } from '../stores/sim';
 import { useRuntimeStore } from '../stores/runtime';
 import { useUiStore } from '../stores/ui';
 import { startBuzzer, stopBuzzer } from '../audio/buzzer';
-import { pressButton, releaseButton, setPotentiometerValue, toggleSwitch } from '../sim/part-input';
+import {
+  pressButton,
+  releaseButton,
+  setPotentiometerValue,
+  setSensorData,
+  toggleSwitch,
+} from '../sim/part-input';
 import { buildNetMap, type NetMap } from '../sim/net-map';
 import {
   PART_BODY,
@@ -390,6 +396,222 @@ function bodyShape(part: PartInstance, def: PartDefinition, rt: RuntimeVisual) {
         </Fragment>
       );
     }
+    case 'wokwi-bh1750': {
+      return (
+        <Fragment>
+          <Rect
+            width={w}
+            height={h}
+            cornerRadius={6}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          <Rect
+            x={12}
+            y={12}
+            width={72}
+            height={36}
+            cornerRadius={3}
+            fill="#0f3d6b"
+            stroke="#1f5a8a"
+            strokeWidth={1}
+          />
+          <Text
+            x={0}
+            y={20}
+            width={w}
+            text="BH1750"
+            align="center"
+            fontSize={9}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Text
+            x={0}
+            y={68}
+            width={w}
+            text="LUX"
+            align="center"
+            fontSize={7}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
+    case 'wokwi-mpu6050': {
+      return (
+        <Fragment>
+          <Rect
+            width={w}
+            height={h}
+            cornerRadius={6}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          <Rect
+            x={12}
+            y={20}
+            width={72}
+            height={40}
+            cornerRadius={3}
+            fill="#3b1d6b"
+            stroke="#5a2f8a"
+            strokeWidth={1}
+          />
+          <Text
+            x={0}
+            y={28}
+            width={w}
+            text="MPU6050"
+            align="center"
+            fontSize={9}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Text
+            x={0}
+            y={80}
+            width={w}
+            text="6-DOF IMU"
+            align="center"
+            fontSize={7}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Text
+            x={0}
+            y={92}
+            width={w}
+            text="ACCEL+GYRO"
+            align="center"
+            fontSize={6}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
+    case 'wokwi-w25q32': {
+      return (
+        <Fragment>
+          <Rect
+            width={w}
+            height={h}
+            cornerRadius={6}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          <Rect
+            x={12}
+            y={24}
+            width={72}
+            height={40}
+            cornerRadius={3}
+            fill="#1a4d2e"
+            stroke="#2f7a45"
+            strokeWidth={1}
+          />
+          <Text
+            x={0}
+            y={32}
+            width={w}
+            text="W25Q32"
+            align="center"
+            fontSize={9}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Text
+            x={0}
+            y={88}
+            width={w}
+            text="SPI FLASH"
+            align="center"
+            fontSize={7}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Text
+            x={0}
+            y={100}
+            width={w}
+            text="32Mbit"
+            align="center"
+            fontSize={6}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
+    case 'wokwi-dht22': {
+      return (
+        <Fragment>
+          <Rect
+            width={w}
+            height={h}
+            cornerRadius={6}
+            fill={PART_BODY}
+            stroke={PART_STROKE}
+            strokeWidth={2}
+          />
+          <Rect
+            x={10}
+            y={16}
+            width={72}
+            height={44}
+            cornerRadius={4}
+            fill="#0a3a5e"
+            stroke="#1f6a8a"
+            strokeWidth={1}
+          />
+          <Text
+            x={0}
+            y={28}
+            width={w}
+            text="DHT22"
+            align="center"
+            fontSize={10}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Text
+            x={0}
+            y={42}
+            width={w}
+            text="TEMP/HUM"
+            align="center"
+            fontSize={7}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+          <Rect
+            x={16}
+            y={72}
+            width={52}
+            height={14}
+            cornerRadius={2}
+            fill="#1a1d24"
+            stroke="#3a3f4a"
+            strokeWidth={0.5}
+          />
+          <Text
+            x={0}
+            y={82}
+            width={w}
+            text="AM2302"
+            align="center"
+            fontSize={6}
+            fill={TEXT_DIM}
+            listening={false}
+          />
+        </Fragment>
+      );
+    }
     default:
       return <Rect width={w} height={h} fill={PART_BODY} stroke={PART_STROKE} strokeWidth={2} />;
   }
@@ -491,6 +713,25 @@ export function PartView(props: PartViewProps) {
     // 若返回 false（未接电源）→ 不报错，Inspector 的警告由 potPowered 展示
     void ok;
   }, [def.type, part.id, potValue, runtimeActive]);
+
+  // M8 传感器（BH1750/MPU6050/DHT22）：attrs 字段（lux/accelX/temperature/humidity…）变更 → sensor.data 注入。
+  // 引擎A（wasm shim 未实现前）仅占位 log warn；引擎B 走 ws-gateway 的 DeviceSpec.defaultBytes。
+  const isSensorPart =
+    def.type === 'wokwi-bh1750' || def.type === 'wokwi-mpu6050' || def.type === 'wokwi-dht22';
+  const sensorFields = useMemo<Record<string, number>>(() => {
+    if (!isSensorPart) return {};
+    const out: Record<string, number> = {};
+    for (const a of def.attrs) {
+      const v = Number(part.attrs[a.key] ?? a.default);
+      if (Number.isFinite(v)) out[a.key] = v;
+    }
+    return out;
+  }, [isSensorPart, def.attrs, part.attrs]);
+  useEffect(() => {
+    if (!isSensorPart) return;
+    if (!runtimeActive) return;
+    setSensorData(part.id, sensorFields);
+  }, [isSensorPart, part.id, runtimeActive, sensorFields]);
 
   // 舵机：PWM 网络监听 → 角度换算
   const servoGpio = useMemo(

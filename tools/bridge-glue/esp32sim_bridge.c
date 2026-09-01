@@ -1,5 +1,5 @@
 /**
- * ESP32Sim 引擎B HAL 桥 glue（M7 方案，03-§7.2）
+ * ESP32Sim 引擎B HAL 桥 glue（M7/M8 方案，03-§7.2.2）
  *
  * 强符号覆盖 Arduino GPIO HAL（无 --wrap，无需编译命令注入）：
  *   pinMode / digitalWrite / digitalRead / attachInterrupt / attachInterruptArg /
@@ -12,22 +12,34 @@
  * core.a 里有 weak 定义（alias），引用被就地满足不产生 undefined reference，
  * wrap 静默失效（M5 golden 实测踩坑，ELF 中 __wrap_* 被 gc-sections 丢弃）。
  *
- * 帧协议（6 字节定长，XOR 校验）：A5 | type | pin | vH | vL | xor(前5字节异或)
- *   0x01 GPIO_WRITE 固件→宿主（vH=0, vL=0/1，数字写 level）
- *   0x02 PIN_MODE   固件→宿主（vH=0, vL=Arduino mode，pullup/pulldown 位供 release 语义）
- *   0x03 PWM_WRITE  固件→宿主（vH:vL = duty 0–1023，LEDC 10 位归一化）
- *   0x04 PWM_FREQ   固件→宿主（vH:vL = freq Hz，0–65535）
- *   0x11 GPIO_INPUT 宿主→固件（vH=0, vL=0/1，注入 + 沿匹配触发 attachInterrupt 回调）
- *   0x12 ADC_INPUT  宿主→固件（vH:vL = 0–4095，钳位 12 位，analogRead 注入值）
+ * 帧协议：
+ *   定长帧（type < 0x20，M5–M7）：A5 | type | pin | vH | vL | xor(前5字节异或) —— 6 字节
+ *     0x01 GPIO_WRITE 固件→宿主（vH=0, vL=0/1，数字写 level）
+ *     0x02 PIN_MODE   固件→宿主（vH=0, vL=Arduino mode，pullup/pulldown 位供 release 语义）
+ *     0x03 PWM_WRITE  固件→宿主（vH:vL = duty 0–1023，LEDC 10 位归一化）
+ *     0x04 PWM_FREQ   固件→宿主（vH:vL = freq Hz，0–65535）
+ *     0x11 GPIO_INPUT 宿主→固件（vH=0, vL=0/1，注入 + 沿匹配触发 attachInterrupt 回调）
+ *     0x12 ADC_INPUT  宿主→固件（vH:vL = 0–4095，钳位 12 位，analogRead 注入值）
+ *   TLV 变长帧（type ≥ 0x20，M8 I2C/SPI 事务）：A5 | type | len | payload | xor(前 len+3 字节异或)
+ *     0x20 I2C_TXN    固件→宿主（payload: addr | dir | wlen | wdata[wlen]）
+ *     0x21 SPI_TXN    固件→宿主（payload: cs | wlen | wdata[wlen]）
+ *     0x30 SENSOR_REPLY 宿主→固件（payload: addr | data[]，I2C 读应答）
+ *     0x31 SPI_REPLY    宿主→固件（payload: cs | data[]，SPI 应答）
  *
  * PWM duty 归一化：analogWrite(0–255, 8 位) 左移 2 位 → 0–1020（10 位域），
  * 与 WS 协议 / glue 上报统一 0–1023。
  *
- * M5/M7 限制：
- *   - ISR 上下文中的 digitalWrite 不上报（uart_write_bytes 非 ISR-safe，避免崩溃）；
+ * M8 回复机制（br_i2c_txn / br_spi_txn）：
+ *   - bus_shim.cpp 调用后发送 TLV 帧并阻塞在二值信号量上，50ms 超时防死锁；
+ *   - RX task 收到 SENSOR_REPLY/SPI_REPLY 时复制 data 到 s_reply_buf 并 give 信号量；
+ *   - 单槽语义：bridge 单 UART 通道，shim 必须串行调用（TwoWire/SPIClass 默认即串行）。
+ *
+ * M5/M7/M8 限制：
+ *   - ISR 上下文中的 digitalWrite/I2C/SPI 事务不上报（uart_write_bytes 非 ISR-safe，
+ *     且信号量不可在 ISR 内 take/give；ISR 内调用直接返回 0）；
  *   - 注入中断回调在 UART RX task 上下文调用（非 ISR），语义与 Wokwi 一致；
- *   - 仅覆盖 Arduino HAL（digitalWrite/attachInterrupt/analogWrite 等），
- *     直调 ESP-IDF gpio_set_level / ledc_set_duty 不可见。
+ *   - 仅覆盖 Arduino HAL（digitalWrite/attachInterrupt/analogWrite/TwoWire/SPIClass 等），
+ *     直调 ESP-IDF gpio_set_level / ledc_set_duty / i2c_* / spi_* 不可见。
  *
  * 由 BuildService 在编译时写入 sketch 目录，随固件一起编译（无 core 污染）。
  */
@@ -38,12 +50,15 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/uart.h"
 #include "soc/soc_caps.h"
 #include "soc/gpio_num.h"
 #include "esp32-hal.h"
 #include "esp32-hal-ledc.h"
 #include "esp32-hal-periman.h"
+
+#include "esp32sim_bridge.h"
 
 /* ---- 真实 HAL（core 3.x 强符号，直接转发） ---- */
 
@@ -88,6 +103,21 @@ extern void __detachInterrupt(uint8_t pin);
 #define FR_GPIO_INPUT  0x11u
 #define FR_ADC_INPUT   0x12u
 
+/* M8 TLV 变长帧类型（type ≥ 此阈值走变长解析） */
+#define FR_TLV_THRESHOLD  0x20u
+#define FR_I2C_TXN      0x20u
+#define FR_SPI_TXN      0x21u
+#define FR_SENSOR_REPLY 0x30u
+#define FR_SPI_REPLY    0x31u
+
+/* M8 回复等待槽：单 UART 通道，shim 必须串行调用 */
+#define BR_REPLY_TIMEOUT_MS 50u
+#define BR_REPLY_MAX        255u
+
+static SemaphoreHandle_t s_reply_sem = NULL;
+static uint8_t s_reply_buf[BR_REPLY_MAX];
+static volatile size_t s_reply_len = 0;
+
 #define DEFAULT_PWM_FREQ 1000u
 
 /* 输入注入表：-1 无注入（读真实引脚），0/1 注入电平 */
@@ -125,6 +155,21 @@ static void br_send_frame(uint8_t type, uint8_t pin, uint16_t value16) {
   const uint8_t fr[FR_SIZE] = { FR_MAGIC, type, pin, vH, vL,
                                 (uint8_t)(FR_MAGIC ^ type ^ pin ^ vH ^ vL) };
   (void)uart_write_bytes(BR_UART, (const char *)fr, FR_SIZE);
+}
+
+/* M8 TLV 变长帧发送：A5 | type | len | payload | xor(前 len+3 字节) */
+static void br_send_tlv(uint8_t type, const uint8_t *payload, uint8_t len) {
+  uint8_t buf[3 + 255 + 1];
+  buf[0] = FR_MAGIC;
+  buf[1] = type;
+  buf[2] = len;
+  uint8_t xor = (uint8_t)(FR_MAGIC ^ type ^ len);
+  for (uint8_t i = 0; i < len; i++) {
+    buf[3 + i] = payload[i];
+    xor ^= payload[i];
+  }
+  buf[3 + len] = xor;
+  (void)uart_write_bytes(BR_UART, (const char *)buf, (size_t)(3 + len + 1));
 }
 
 /* 输出上报入口（task 上下文；ISR 内静默跳过，见头注释限制） */
@@ -165,6 +210,15 @@ static void br_init(void) {
   }
   if (uart_driver_install(BR_UART, 256, 0, 0, NULL, 0) != ESP_OK) return;
 
+  /* M8 回复信号量：二值，初始空（无回复） */
+  if (s_reply_sem == NULL) {
+    s_reply_sem = xSemaphoreCreateBinary();
+    if (s_reply_sem == NULL) {
+      uart_driver_delete(BR_UART);
+      return;
+    }
+  }
+
   if (xTaskCreate(br_rx_task, "br_rx", BR_RX_TASK_STACK, NULL,
                   tskIDLE_PRIORITY + 2, NULL) != pdPASS) {
     uart_driver_delete(BR_UART);
@@ -191,42 +245,181 @@ static void br_apply_input(uint8_t pin, uint8_t level) {
   s_inject[pin] = lv;
 }
 
+static void br_rx_task(void *arg);
+
+/* M8 TLV 回复处理：复制 data 到 s_reply_buf 并 give 信号量 */
+static void br_handle_reply(uint8_t type, const uint8_t *payload, uint8_t len) {
+  if (type != FR_SENSOR_REPLY && type != FR_SPI_REPLY) return;
+  /* SENSOR_REPLY: addr | data[] ；SPI_REPLY: cs | data[]
+   * 共同格式：第 1 字节为 addr/cs，剩余为 data */
+  if (len == 0) {
+    s_reply_len = 0;
+  } else {
+    size_t copy = len - 1;
+    if (copy > BR_REPLY_MAX) copy = BR_REPLY_MAX;
+    for (size_t i = 0; i < copy; i++) s_reply_buf[i] = payload[i + 1];
+    s_reply_len = copy;
+  }
+  if (s_reply_sem != NULL) {
+    (void)xSemaphoreGive(s_reply_sem);
+  }
+}
+
+/* RX 状态机相位 */
+typedef enum {
+  RX_MAGIC,        /* 等待 A5 */
+  RX_TYPE,         /* 读 type 字节，决定定长/变长 */
+  RX_FIXED,        /* 定长帧：收集 [pin, vH, vL, chk] 4 字节 */
+  RX_TLV_LEN,      /* TLV 帧：读 len */
+  RX_TLV_PAYLOAD   /* TLV 帧：收集 payload + chk = len+1 字节 */
+} rx_phase_t;
+
 static void br_rx_task(void *arg) {
   (void)arg;
   uint8_t buf[64];
-  uint8_t fr[5]; /* payload: [type, pin, vH, vL, chk] — FR_SIZE-1 bytes */
-  size_t got = 0;
+  rx_phase_t phase = RX_MAGIC;
+
+  /* 定长帧状态：fr[0]=type, fr[1]=pin, fr[2]=vH, fr[3]=vL, fr[4]=chk */
+  uint8_t fr[5];
+  size_t fr_idx = 0;
+
+  /* TLV 帧状态 */
+  uint8_t tlv_type = 0;
+  uint8_t tlv_len = 0;
+  uint8_t tlv_buf[BR_REPLY_MAX + 1];
+  size_t tlv_idx = 0;
 
   for (;;) {
     const int n = uart_read_bytes(BR_UART, buf, sizeof(buf), pdMS_TO_TICKS(50));
     for (int i = 0; i < n; i++) {
       const uint8_t b = buf[i];
-      if (got == 0) {
-        if (b != FR_MAGIC) continue; /* 重同步 */
-        got = 1;
-      } else {
-        fr[got - 1] = b;
-        got += 1;
-        if (got < FR_SIZE) continue;
 
-        got = 0;
-        const uint8_t type = fr[0];
-        const uint8_t pin  = fr[1];
-        const uint8_t vH   = fr[2];
-        const uint8_t vL   = fr[3];
-        const uint8_t chk  = (uint8_t)(FR_MAGIC ^ type ^ pin ^ vH ^ vL);
-        if (chk != fr[4]) continue; /* 坏帧丢弃 */
-        if (type == FR_GPIO_INPUT) {
-          br_apply_input(pin, vL);
-        } else if (type == FR_ADC_INPUT) {
-          if (pin < SOC_GPIO_PIN_COUNT) {
-            const uint16_t val = (uint16_t)(((uint16_t)vH << 8) | (uint16_t)vL);
-            s_analog_inject[pin] = (int16_t)(val & 0x0FFFu); /* 钳位 12 位 */
+      switch (phase) {
+        case RX_MAGIC: {
+          if (b == FR_MAGIC) phase = RX_TYPE;
+          break;
+        }
+        case RX_TYPE: {
+          if (b < FR_TLV_THRESHOLD) {
+            fr[0] = b;
+            fr_idx = 1;
+            phase = RX_FIXED;
+          } else {
+            tlv_type = b;
+            phase = RX_TLV_LEN;
           }
+          break;
+        }
+        case RX_FIXED: {
+          fr[fr_idx++] = b;
+          if (fr_idx < FR_SIZE - 1) break; /* 还需 [pin, vH, vL, chk] */
+          /* 5 字节收集完毕，校验 */
+          phase = RX_MAGIC;
+          const uint8_t type = fr[0];
+          const uint8_t pin  = fr[1];
+          const uint8_t vH   = fr[2];
+          const uint8_t vL   = fr[3];
+          const uint8_t chk  = (uint8_t)(FR_MAGIC ^ type ^ pin ^ vH ^ vL);
+          if (chk != fr[4]) break; /* 坏帧丢弃 */
+          if (type == FR_GPIO_INPUT) {
+            br_apply_input(pin, vL);
+          } else if (type == FR_ADC_INPUT) {
+            if (pin < SOC_GPIO_PIN_COUNT) {
+              const uint16_t val = (uint16_t)(((uint16_t)vH << 8) | (uint16_t)vL);
+              s_analog_inject[pin] = (int16_t)(val & 0x0FFFu); /* 钳位 12 位 */
+            }
+          }
+          break;
+        }
+        case RX_TLV_LEN: {
+          tlv_len = b;
+          tlv_idx = 0;
+          phase = RX_TLV_PAYLOAD;
+          break;
+        }
+        case RX_TLV_PAYLOAD: {
+          if (tlv_idx < sizeof(tlv_buf)) {
+            tlv_buf[tlv_idx++] = b;
+          } else {
+            /* 溢出：丢弃整帧并重同步 */
+            phase = RX_MAGIC;
+            break;
+          }
+          if (tlv_idx < (size_t)tlv_len + 1) break; /* 还需 payload[len] + chk[1] */
+          /* 收集完毕，校验 */
+          phase = RX_MAGIC;
+          const uint8_t chk = tlv_buf[tlv_len];
+          uint8_t xor = (uint8_t)(FR_MAGIC ^ tlv_type ^ tlv_len);
+          for (size_t k = 0; k < tlv_len; k++) xor ^= tlv_buf[k];
+          if ((xor & 0xff) != chk) break; /* 坏帧丢弃 */
+          br_handle_reply(tlv_type, tlv_buf, tlv_len);
+          break;
         }
       }
     }
   }
+}
+
+/* M8 I2C 事务发送 + 阻塞等待回复（shim 上下文调用） */
+size_t br_i2c_txn(uint8_t addr, uint8_t dir, const uint8_t *wdata, uint8_t wlen,
+                  uint8_t *rbuf, uint8_t rlen_cap) {
+  br_init();
+  if (s_reply_sem == NULL) return 0;
+  /* ISR 内不阻塞（uart_write_bytes 非 ISR-safe，且信号量不可在 ISR 内操作） */
+  if (xPortInIsrContext() != pdFALSE) return 0;
+
+  /* 构造 payload: addr | dir | wlen | wdata[wlen] */
+  uint8_t payload[3 + 255];
+  size_t plen = 0;
+  payload[plen++] = (uint8_t)(addr & 0x7f);
+  payload[plen++] = dir ? 1u : 0u;
+  payload[plen++] = wlen;
+  for (uint8_t i = 0; i < wlen; i++) payload[plen++] = wdata[i];
+
+  /* 排空信号量并复位回复槽 */
+  while (xSemaphoreTake(s_reply_sem, 0) == pdTRUE) { /* drain */ }
+  s_reply_len = 0;
+
+  br_send_tlv(FR_I2C_TXN, payload, (uint8_t)plen);
+
+  /* 阻塞等待 SENSOR_REPLY，50ms 超时 */
+  if (xSemaphoreTake(s_reply_sem, pdMS_TO_TICKS(BR_REPLY_TIMEOUT_MS)) != pdTRUE) {
+    return 0;
+  }
+
+  size_t copy = s_reply_len;
+  if (copy > rlen_cap) copy = rlen_cap;
+  for (size_t i = 0; i < copy; i++) rbuf[i] = s_reply_buf[i];
+  return copy;
+}
+
+/* M8 SPI 事务发送 + 阻塞等待回复（shim 上下文调用） */
+size_t br_spi_txn(uint8_t cs, const uint8_t *wdata, uint8_t wlen,
+                  uint8_t *rbuf, uint8_t rlen_cap) {
+  br_init();
+  if (s_reply_sem == NULL) return 0;
+  if (xPortInIsrContext() != pdFALSE) return 0;
+
+  /* 构造 payload: cs | wlen | wdata[wlen] */
+  uint8_t payload[2 + 255];
+  size_t plen = 0;
+  payload[plen++] = cs;
+  payload[plen++] = wlen;
+  for (uint8_t i = 0; i < wlen; i++) payload[plen++] = wdata[i];
+
+  while (xSemaphoreTake(s_reply_sem, 0) == pdTRUE) { /* drain */ }
+  s_reply_len = 0;
+
+  br_send_tlv(FR_SPI_TXN, payload, (uint8_t)plen);
+
+  if (xSemaphoreTake(s_reply_sem, pdMS_TO_TICKS(BR_REPLY_TIMEOUT_MS)) != pdTRUE) {
+    return 0;
+  }
+
+  size_t copy = s_reply_len;
+  if (copy > rlen_cap) copy = rlen_cap;
+  for (size_t i = 0; i < copy; i++) rbuf[i] = s_reply_buf[i];
+  return copy;
 }
 
 /* ---- HAL 强定义（覆盖 core 的 weak alias，统一进桥） ---- */

@@ -55,6 +55,40 @@ export interface AttrDef {
   step?: number;
 }
 
+/**
+ * I2C/SPI 设备寄存器语义（M8 D3，03-§2.2）。
+ * 双端（引擎A PinBus / 引擎B gpioBridge）共同解释此声明应答 I2C/SPI 事务，
+ * 避免行为漂移；无设备挂载的 addr/cs 宿主回 NACK 语义（len=0）。
+ */
+export interface I2cRegisterSpec {
+  /** 寄存器/命令字节（0x00–0xFF）；7-bit 地址限制在 I2cDeviceSpec.address */
+  addr: number;
+  /** 单次读取字节数（如 BH1750 high-res=2, MPU6050 加速度 6 轴=6） */
+  size: number;
+  /** 返回字节解码语义（默认 'raw' 透传） */
+  decode?: 'raw' | 'lux' | 'be.int16' | 'le.uint16' | 'accel.xyz' | 'gyro.xyz' | 'whoami';
+  /** 无注入时的默认字节（按 size 填充；不填则按 decode 语义生成 0 值） */
+  defaultBytes?: number[];
+}
+
+export interface I2cDeviceSpec {
+  kind: 'i2c-device';
+  /** 7-bit I2C 地址（BH1750=0x23, MPU6050=0x68） */
+  address: number;
+  /** 寄存器语义表 */
+  registers: I2cRegisterSpec[];
+}
+
+export interface SpiDeviceSpec {
+  kind: 'spi-device';
+  /** CS 片选对应的板卡 GPIO（绑定 spi.txn.cs） */
+  csGpio: number;
+  /** 命令字 + 返回字节语义（addr=命令字，size=返回字节长度） */
+  registers?: I2cRegisterSpec[];
+}
+
+export type DeviceSpec = I2cDeviceSpec | SpiDeviceSpec;
+
 export interface PartDefinition {
   type: string;
   name: string;
@@ -69,8 +103,10 @@ export interface PartDefinition {
     listens: EngineEventType[];
     /** 可注入的输入 */
     produces?: InputEventType[];
-    /** 见《05-元件清单》行为列 */
+    /** 见《05-元件清单》行为列；'i2c-device'/'spi-device' 触发查 device 字段 */
     behavior: string;
+    /** M8：I2C/SPI 设备语义表（behavior='i2c-device'/'spi-device' 时必填） */
+    device?: DeviceSpec;
   };
 }
 
@@ -147,6 +183,32 @@ export const attrDefSchema = z.object({
   step: z.number().optional(),
 });
 
+export const i2cRegisterSpecSchema = z.object({
+  addr: z.number().int().min(0).max(0xff),
+  size: z.number().int().min(0).max(255),
+  decode: z
+    .enum(['raw', 'lux', 'be.int16', 'le.uint16', 'accel.xyz', 'gyro.xyz', 'whoami'])
+    .optional(),
+  defaultBytes: z.array(z.number().int().min(0).max(255)).optional(),
+});
+
+export const i2cDeviceSpecSchema = z.object({
+  kind: z.literal('i2c-device'),
+  address: z.number().int().min(0).max(0x7f),
+  registers: z.array(i2cRegisterSpecSchema),
+});
+
+export const spiDeviceSpecSchema = z.object({
+  kind: z.literal('spi-device'),
+  csGpio: z.number().int().nonnegative(),
+  registers: z.array(i2cRegisterSpecSchema).optional(),
+});
+
+export const deviceSpecSchema = z.discriminatedUnion('kind', [
+  i2cDeviceSpecSchema,
+  spiDeviceSpecSchema,
+]);
+
 export const partCategorySchema = z.enum(['mcu', 'io', 'sensor', 'display', 'power']);
 
 export const partDefinitionSchema = z.object({
@@ -165,6 +227,7 @@ export const partDefinitionSchema = z.object({
     listens: z.array(engineEventTypeSchema),
     produces: z.array(inputEventTypeSchema).optional(),
     behavior: z.string(),
+    device: deviceSpecSchema.optional(),
   }),
 });
 

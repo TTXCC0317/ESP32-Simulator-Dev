@@ -1,0 +1,54 @@
+{
+  "type": "wokwi-bh1750",
+  "name": "BH1750 数字光强传感器",
+  "category": "sensor",
+  "defVersion": 1,
+  "pins": [
+    { "name": "VCC", "role": "power", "x": 8, "y": 8 },
+    { "name": "GND", "role": "gnd", "x": 8, "y": 32 },
+    { "name": "SCL", "role": "i2c.scl", "x": 8, "y": 56 },
+    { "name": "SDA", "role": "i2c.sda", "x": 8, "y": 80 }
+  ],
+  "attrs": [
+    {
+      "key": "address",
+      "type": "number",
+      "label": "I2C 地址（0x23 或 0x5C）",
+      "default": 35,
+      "min": 35,
+      "max": 92,
+      "step": 1
+    },
+    {
+      "key": "lux",
+      "type": "number",
+      "label": "光照度 (lux)",
+      "default": 100,
+      "min": 0,
+      "max": 65535,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-bh1750.svg", "width": 96, "height": 96 },
+  "simulator": {
+    "listens": ["i2c.txn"],
+    "produces": ["sensor.data"],
+    "behavior": "i2c-device",
+    "device": {
+      "kind": "i2c-device",
+      "address": 35,
+      "registers": [
+        {
+          "addr": 16,
+          "size": 2,
+          "decode": "lux",
+          "defaultBytes": [0, 120]
+        },
+        { "addr": 17, "size": 2, "decode": "lux", "defaultBytes": [0, 120] },
+        { "addr": 19, "size": 2, "decode": "lux", "defaultBytes": [0, 120] },
+        { "addr": 1, "size": 0, "decode": "raw" },
+        { "addr": 7, "size": 0, "decode": "raw" }
+      ]
+    }
+  }
+}

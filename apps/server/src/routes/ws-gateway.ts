@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type net from 'node:net';
 import { join } from 'node:path';
-import type { CircuitDoc } from '@esp32-sim/shared';
+import type { CircuitDoc, I2cDeviceSpec, SpiDeviceSpec } from '@esp32-sim/shared';
 import { clientMsgSchema, type ClientMsg, type ServerMsg } from '@esp32-sim/shared';
 import type { AppConfig } from '../config/schema';
 import type { Db } from '../db/client';
@@ -39,12 +39,19 @@ interface GwSession {
   bridge: QemuGpioBridge | null;
   /** gpio.write 事件单调序号 */
   gpioSeq: number;
+  /** M8 i2c.txn / spi.txn 事件单调序号 */
+  i2cSeq: number;
+  spiSeq: number;
   /** 固件上报的 pull 语义（PIN_MODE 帧）→ release 回退电平 */
   pinPull: Map<number, 0 | 1>;
   /** 引脚邻接表（attach 时由 circuit 构建，input.pin 映射板卡 GPIO 用） */
   adj: Map<string, string[]> | null;
   /** 板卡 part 的 id（电路中 type = board-<boardType> 的 part） */
   boardPartId: string | null;
+  /** M8 设备表：addr → I2C 设备语义（attach 时由 circuit + parts_catalog 构建） */
+  i2cDevices: Map<number, I2cDeviceSpec>;
+  /** M8 设备表：csGpio → SPI 设备语义 */
+  spiDevices: Map<number, SpiDeviceSpec>;
   /** 固件 panic 扫描缓冲（串口文本尾部窗口，防关键词跨 chunk 切断） */
   panicTail: string;
   /** 本会话 panic 自动重启次数（上限 1 次；ctrl reset / 重新 attach 归零） */
@@ -137,9 +144,13 @@ export async function wsGatewayRoutes(
       gpioSocket: null,
       bridge: null,
       gpioSeq: 0,
+      i2cSeq: 0,
+      spiSeq: 0,
       pinPull: new Map(),
       adj: null,
       boardPartId: null,
+      i2cDevices: new Map(),
+      spiDevices: new Map(),
       panicTail: '',
       panicRetries: 0,
       unsubBuild: null,
@@ -273,8 +284,77 @@ export async function wsGatewayRoutes(
     s.boardPartId =
       p.circuit.parts.find((part) => part.type === `board-${s.boardType}`)?.id ?? null;
     s.pinPull = new Map();
+    // M8 I2C/SPI 设备表：扫描 circuit.parts 中带 simulator.device 的元件
+    s.i2cDevices = new Map();
+    s.spiDevices = new Map();
+    buildDeviceTables(s, p.circuit);
     setState(s, 'attaching');
     resolveBuild(s);
+  }
+
+  /**
+   * M8 设备表构建：遍历 circuit.parts 查 parts_catalog，收集 simulator.device
+   *（i2c-device / spi-device）；网关在 onI2cTxn/onSpiTxn 时查表算回复。
+   */
+  function buildDeviceTables(s: GwSession, circuit: CircuitDoc): void {
+    const stmt = db.prepare('SELECT definition_json FROM parts_catalog WHERE type = ?');
+    for (const part of circuit.parts) {
+      const row = stmt.get(part.type) as { definition_json: string } | undefined;
+      if (!row) continue;
+      let def: { simulator?: { device?: unknown } };
+      try {
+        def = JSON.parse(row.definition_json) as typeof def;
+      } catch {
+        continue;
+      }
+      const dev = def.simulator?.device;
+      if (!dev) continue;
+      const d = dev as I2cDeviceSpec | SpiDeviceSpec;
+      if (d.kind === 'i2c-device') {
+        s.i2cDevices.set(d.address, d);
+      } else if (d.kind === 'spi-device') {
+        s.spiDevices.set(d.csGpio, d);
+      }
+    }
+  }
+
+  /**
+   * M8 I2C 回复计算：根据 wdata[0]（register addr）查寄存器语义，
+   * 返回 defaultBytes 或按 size 填 0（无设备/无寄存器 → 空数组 NACK 语义）。
+   * 注：协议未传 reqLen（requestFrom 期望字节数），按寄存器 spec.size 回复；
+   * glue 端 rbuf 容量由 shim 传入的 rlen_cap 截断，少于 spec 时返回 rlen_cap 字节。
+   */
+  function computeI2cReply(device: I2cDeviceSpec | undefined, wdata: Uint8Array): Uint8Array {
+    if (!device) return new Uint8Array(0); // NACK
+    const regAddr = wdata[0];
+    const reg =
+      regAddr === undefined ? undefined : device.registers.find((r) => r.addr === regAddr);
+    if (!reg) return new Uint8Array(0); // 未知寄存器 → NACK
+    const size = Math.min(reg.size, 255);
+    if (reg.defaultBytes && reg.defaultBytes.length >= size) {
+      return new Uint8Array(reg.defaultBytes.slice(0, size));
+    }
+    return new Uint8Array(size); // 全 0（decode='whoami' 等可由前端覆盖）
+  }
+
+  /**
+   * M8 SPI 回复计算：全双工语义，回复字节数 = wdata 长度；
+   * 有 registers 时按 wdata[0] 命令字查 defaultBytes 截取。
+   */
+  function computeSpiReply(device: SpiDeviceSpec | undefined, wdata: Uint8Array): Uint8Array {
+    if (!device?.registers || device.registers.length === 0) {
+      // 无寄存器语义：回 0（SPI 幻象 echo 由 glue shim 阻断，不再发生）
+      return new Uint8Array(wdata.length);
+    }
+    const regAddr = wdata[0];
+    const reg =
+      regAddr === undefined ? undefined : device.registers.find((r) => r.addr === regAddr);
+    if (!reg) return new Uint8Array(wdata.length);
+    const size = Math.min(reg.size, wdata.length);
+    if (reg.defaultBytes && reg.defaultBytes.length >= size) {
+      return new Uint8Array(reg.defaultBytes.slice(0, size));
+    }
+    return new Uint8Array(size);
   }
 
   /** build 状态分流（§7.3：success→spawn；queued/running→building-wait；无→submit；failed→error） */
@@ -491,6 +571,32 @@ export async function wsGatewayRoutes(
           },
           onPwmFreq: (_pin, _freq) => {
             /* freq 由 bridge.freqOfPin 跟踪，onPwmWrite 时组合上报 */
+          },
+          onI2cTxn: (ev) => {
+            s.i2cSeq += 1;
+            send(s, {
+              type: 'i2c.txn',
+              payload: {
+                addr: ev.addr,
+                dir: ev.dir,
+                data: Array.from(ev.data),
+                seq: s.i2cSeq,
+              },
+            });
+            // 计算回复：dir='w' 回 0 字节（解开 glue 阻塞），dir='r' 查寄存器语义
+            const device = s.i2cDevices.get(ev.addr);
+            const reply = ev.dir === 'r' ? computeI2cReply(device, ev.data) : new Uint8Array(0);
+            s.bridge?.sendI2cReply(ev.addr, reply);
+          },
+          onSpiTxn: (ev) => {
+            s.spiSeq += 1;
+            send(s, {
+              type: 'spi.txn',
+              payload: { cs: ev.cs, data: Array.from(ev.data), seq: s.spiSeq },
+            });
+            const device = s.spiDevices.get(ev.cs);
+            const reply = computeSpiReply(device, ev.data);
+            s.bridge?.sendSpiReply(ev.cs, reply);
           },
         });
         gpioSocket.on('close', () => {

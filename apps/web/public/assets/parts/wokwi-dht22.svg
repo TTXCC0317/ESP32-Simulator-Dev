@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 92 120" width="92" height="120">
+  <!-- wokwi-dht22（M8 05-§2.2）：单总线温湿度，封装 92×120；引脚 VCC/SDA/NC/GND -->
+  <rect x="4" y="4" width="84" height="100" rx="6" fill="var(--panel, #171a21)" stroke="var(--panel-border, #262b36)" stroke-width="2"/>
+  <rect x="14" y="20" width="64" height="44" rx="4" fill="#0a3a5e" stroke="#1f6a8a" stroke-width="1"/>
+  <text x="46" y="44" text-anchor="middle" font-size="10" fill="#9aa3b2">DHT22</text>
+  <text x="46" y="58" text-anchor="middle" font-size="7" fill="#6b7280">TEMP/HUM</text>
+  <rect x="20" y="76" width="52" height="14" rx="2" fill="#1a1d24" stroke="#3a3f4a" stroke-width="0.5"/>
+  <text x="46" y="86" text-anchor="middle" font-size="6" fill="#9aa3b2">AM2302</text>
+  <circle id="pin-VCC" cx="30" cy="114" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-SDA" cx="46" cy="114" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-NC" cx="62" cy="114" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+  <circle id="pin-GND" cx="78" cy="114" r="3" stroke="var(--pin-stroke, #6b7280)" fill="transparent"/>
+</svg>

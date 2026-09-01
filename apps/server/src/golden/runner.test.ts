@@ -170,6 +170,24 @@ describe('golden 剧本', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/wasm 产物未入库|联调/i);
   });
+
+  it('M8 i2c-sensor golden.json 可加载（serialContainsAll 断言 BH1750 读数）', () => {
+    const s = loadGoldenScript('i2c-sensor');
+    expect(s.exampleId).toBe('i2c-sensor');
+    expect(s.expect.serialContainsAll).toContain('LUX: 100');
+  });
+
+  it('M8 mpu6050-roll golden.json 可加载（WHO_AM_I + ACCEL 断言）', () => {
+    const s = loadGoldenScript('mpu6050-roll');
+    expect(s.exampleId).toBe('mpu6050-roll');
+    expect(s.expect.serialContainsAll).toEqual(['WHO_AM_I: 0x68', 'ACCEL']);
+  });
+
+  it('M8 dht22-basic golden.json 可加载（TEMP/HUM 断言）', () => {
+    const s = loadGoldenScript('dht22-basic');
+    expect(s.exampleId).toBe('dht22-basic');
+    expect(s.expect.serialContainsAll).toEqual(['TEMP: 22.0', 'HUM: 50.0']);
+  });
 });
 
 /**

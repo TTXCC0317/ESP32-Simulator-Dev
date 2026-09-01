@@ -217,7 +217,10 @@ export class MpyWasmEngine implements SimulationEngine {
       wasm.mod._mp_sched_keyboard_interrupt?.();
       this.log('info', '已注入 KeyboardInterrupt');
     } else {
-      this.log('warn', '停止中断不可用（产物未导出 mp_sched_keyboard_interrupt）；死循环请停止会话');
+      this.log(
+        'warn',
+        '停止中断不可用（产物未导出 mp_sched_keyboard_interrupt）；死循环请停止会话',
+      );
     }
   }
 

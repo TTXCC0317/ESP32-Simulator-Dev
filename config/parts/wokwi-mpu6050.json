@@ -1,0 +1,96 @@
+{
+  "type": "wokwi-mpu6050",
+  "name": "MPU6050 6轴加速度/陀螺仪",
+  "category": "sensor",
+  "defVersion": 1,
+  "pins": [
+    { "name": "VCC", "role": "power", "x": 8, "y": 8 },
+    { "name": "GND", "role": "gnd", "x": 8, "y": 32 },
+    { "name": "SCL", "role": "i2c.scl", "x": 8, "y": 56 },
+    { "name": "SDA", "role": "i2c.sda", "x": 8, "y": 80 },
+    { "name": "INT", "role": "signal.out", "x": 8, "y": 104 }
+  ],
+  "attrs": [
+    {
+      "key": "address",
+      "type": "number",
+      "label": "I2C 地址（0x68 或 0x69）",
+      "default": 104,
+      "min": 104,
+      "max": 105,
+      "step": 1
+    },
+    {
+      "key": "accelX",
+      "type": "number",
+      "label": "X 轴加速度",
+      "default": 0,
+      "min": -32768,
+      "max": 32767,
+      "step": 1
+    },
+    {
+      "key": "accelY",
+      "type": "number",
+      "label": "Y 轴加速度",
+      "default": 0,
+      "min": -32768,
+      "max": 32767,
+      "step": 1
+    },
+    {
+      "key": "accelZ",
+      "type": "number",
+      "label": "Z 轴加速度",
+      "default": 16384,
+      "min": -32768,
+      "max": 32767,
+      "step": 1
+    },
+    {
+      "key": "gyroX",
+      "type": "number",
+      "label": "X 轴角速度",
+      "default": 0,
+      "min": -32768,
+      "max": 32767,
+      "step": 1
+    },
+    {
+      "key": "gyroY",
+      "type": "number",
+      "label": "Y 轴角速度",
+      "default": 0,
+      "min": -32768,
+      "max": 32767,
+      "step": 1
+    },
+    {
+      "key": "gyroZ",
+      "type": "number",
+      "label": "Z 轴角速度",
+      "default": 0,
+      "min": -32768,
+      "max": 32767,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-mpu6050.svg", "width": 96, "height": 128 },
+  "simulator": {
+    "listens": ["i2c.txn"],
+    "produces": ["sensor.data"],
+    "behavior": "i2c-device",
+    "device": {
+      "kind": "i2c-device",
+      "address": 104,
+      "registers": [
+        { "addr": 117, "size": 1, "decode": "whoami", "defaultBytes": [104] },
+        { "addr": 59, "size": 6, "decode": "accel.xyz", "defaultBytes": [0, 0, 0, 0, 64, 0] },
+        { "addr": 67, "size": 6, "decode": "gyro.xyz", "defaultBytes": [0, 0, 0, 0, 0, 0] },
+        { "addr": 107, "size": 1, "decode": "raw", "defaultBytes": [0] },
+        { "addr": 27, "size": 1, "decode": "raw", "defaultBytes": [0] },
+        { "addr": 28, "size": 1, "decode": "raw", "defaultBytes": [0] }
+      ]
+    }
+  }
+}

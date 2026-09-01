@@ -129,3 +129,18 @@ export function setPotentiometerValue(partId: string, valuePercent: number): boo
   emit({ type: 'analog.value', partId, pin: 'SIG', value });
   return true;
 }
+
+/**
+ * I2C/SPI 传感器注入（M8 05-§4.x sensor.data）：
+ * 用户在 Inspector 调 BH1750/MPU6050 等 attrs（lux/accelX/gyroZ…）时，
+ * 将字段聚合为 sensor.data 输入事件发往引擎：
+ * - 引擎A（wasm shim 未实现前）：仅 log warn 占位（不影响 PinBus 状态）
+ * - 引擎B（QEMU+glue）：ws-gateway 收 i2c.txn/spi.txn 时，按 computeI2cReply 计算
+ *   寄存器字节；sensor.data 暂不影响引擎B（attrs 是前端 store 的"输入旋钮"，
+ *   ws-gateway 走的是 catalog.parts_catalog 里 DeviceSpec.defaultBytes，
+ *   运行期不可变）。本函数仅作为前端 → 引擎A 的预留接口。
+ */
+export function setSensorData(partId: string, data: Record<string, number>): void {
+  if (!runtimeActive()) return;
+  emit({ type: 'sensor.data', partId, data });
+}

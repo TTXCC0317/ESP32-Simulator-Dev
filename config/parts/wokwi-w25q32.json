@@ -1,0 +1,40 @@
+{
+  "type": "wokwi-w25q32",
+  "name": "W25Q32 SPI Flash (32Mbit)",
+  "category": "io",
+  "defVersion": 1,
+  "pins": [
+    { "name": "VCC", "role": "power", "x": 8, "y": 8 },
+    { "name": "GND", "role": "gnd", "x": 8, "y": 32 },
+    { "name": "CS", "role": "spi.cs", "x": 8, "y": 56 },
+    { "name": "SCK", "role": "spi.sck", "x": 8, "y": 80 },
+    { "name": "MOSI", "role": "spi.mosi", "x": 8, "y": 104 },
+    { "name": "MISO", "role": "spi.miso", "x": 8, "y": 128 }
+  ],
+  "attrs": [
+    {
+      "key": "csGpio",
+      "type": "number",
+      "label": "CS 片选 GPIO",
+      "default": 5,
+      "min": 0,
+      "max": 33,
+      "step": 1
+    }
+  ],
+  "renderer": { "asset": "parts/wokwi-w25q32.svg", "width": 96, "height": 144 },
+  "simulator": {
+    "listens": ["spi.txn"],
+    "produces": ["sensor.data"],
+    "behavior": "spi-device",
+    "device": {
+      "kind": "spi-device",
+      "csGpio": 5,
+      "registers": [
+        { "addr": 159, "size": 3, "decode": "raw", "defaultBytes": [239, 64, 22] },
+        { "addr": 144, "size": 1, "decode": "raw", "defaultBytes": [0] },
+        { "addr": 5, "size": 2, "decode": "le.uint16", "defaultBytes": [17, 64] }
+      ]
+    }
+  }
+}

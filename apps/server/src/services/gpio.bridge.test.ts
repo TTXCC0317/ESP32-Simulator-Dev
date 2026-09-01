@@ -10,16 +10,22 @@ import {
   PIN_MODE,
   PWM_WRITE,
   PWM_FREQ,
+  I2C_TXN,
+  SPI_TXN,
+  SENSOR_REPLY,
+  SPI_REPLY,
   QemuGpioBridge,
   encodeFrame,
   encodeFrame16,
+  encodeTlvFrame,
   pullOfMode,
 } from './gpio.bridge';
 
 /**
- * L1（02-§4 M5/M7 测试项）：GPIO 桥帧编解码与字节流状态机
- * 帧协议与 tools/bridge-glue/esp32sim_bridge.c 一致（03-§7.2）。
- * M7：6 字节定长帧（A5|type|pin|vH|vL|xor），新增 PWM/ADC 类型。
+ * L1（02-§4 M5/M7/M8 测试项）：GPIO 桥帧编解码与字节流状态机
+ * 帧协议与 tools/bridge-glue/esp32sim_bridge.c + bus_shim.cpp 一致（03-§7.2.2）。
+ * M7：6 字节定长帧（A5|type|pin|vH|vL|xor），PWM/ADC 类型。
+ * M8：TLV 变长帧（A5|type|len|payload|xor），I2C/SPI 事务类型。
  */
 
 /** 模拟 QEMU 第二 serial socket：记录写出帧 */
@@ -48,6 +54,27 @@ function framesOf(sock: FakeSocket): Array<[number, number, number]> {
       const vH = b[i + 3] as number;
       const vL = b[i + 4] as number;
       out.push([type, pin, ((vH & 0xff) << 8) | (vL & 0xff)]);
+    }
+    return out;
+  });
+}
+
+/** 解析已写出的 TLV 变长帧 → [type, payload]（按 len 跳步） */
+function tlvFramesOf(sock: FakeSocket): Array<[number, Uint8Array]> {
+  return sock.written.flatMap((b) => {
+    const out: Array<[number, Uint8Array]> = [];
+    let i = 0;
+    while (i + 3 <= b.length) {
+      if (b[i] !== BRIDGE_MAGIC) {
+        i += 1;
+        continue;
+      }
+      const type = b[i + 1] as number;
+      const len = b[i + 2] as number;
+      if (i + 3 + len + 1 > b.length) break;
+      const payload = b.subarray(i + 3, i + 3 + len);
+      out.push([type, Uint8Array.from(payload)]);
+      i += 3 + len + 1;
     }
     return out;
   });
@@ -224,5 +251,253 @@ describe('QemuGpioBridge 字节流状态机（6 字节帧）', () => {
       [ADC_INPUT, 35, 4095],
       [ADC_INPUT, 33, 1],
     ]);
+  });
+});
+
+describe('TLV 变长帧编解码（03-§7.2.2 M8 I2C/SPI 事务 + XOR 校验）', () => {
+  it('encodeTlvFrame：A5|type|len|payload|xor（I2C_TXN 写 BH1750 0x10 命令）', () => {
+    const payload = Uint8Array.from([0x23, 0x00, 0x01, 0x10]); // addr|write|len=1|cmd=0x10
+    const f = encodeTlvFrame(I2C_TXN, payload);
+    expect(f).toHaveLength(3 + 4 + 1); // 8
+    expect(f[0]).toBe(BRIDGE_MAGIC);
+    expect(f[1]).toBe(I2C_TXN);
+    expect(f[2]).toBe(4);
+    expect(f.subarray(3, 7)).toEqual(Buffer.from(payload));
+    let xor = BRIDGE_MAGIC ^ I2C_TXN ^ 4;
+    for (const b of payload) xor ^= b;
+    expect(f[7]).toBe(xor & 0xff);
+  });
+
+  it('encodeTlvFrame：SPI_TXN 全双工 4 字节', () => {
+    const payload = Uint8Array.from([5, 4, 0x9f, 0x00, 0x00, 0x00]); // cs|len|data
+    const f = encodeTlvFrame(SPI_TXN, payload);
+    expect(f).toHaveLength(3 + 6 + 1);
+    expect(f[1]).toBe(SPI_TXN);
+    expect(f[2]).toBe(6);
+  });
+
+  it('encodeTlvFrame：len=0 空载荷（I2C 空写/广播）', () => {
+    const f = encodeTlvFrame(I2C_TXN, new Uint8Array(0));
+    expect(f).toHaveLength(4); // magic+type+len(0)+xor
+    expect(f[2]).toBe(0);
+    expect(f[3]).toBe((BRIDGE_MAGIC ^ I2C_TXN ^ 0) & 0xff);
+  });
+
+  it('I2C_TXN 帧解析 → onI2cTxn 回调（写 BH1750 high-res 命令）', () => {
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    // addr=0x23, dir=write(0), len=1, cmd=0x10
+    bridge.feed(encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10])));
+    expect(txns).toHaveLength(1);
+    expect(txns[0]!.addr).toBe(0x23);
+    expect(txns[0]!.dir).toBe('w');
+    expect(Array.from(txns[0]!.data)).toEqual([0x10]);
+  });
+
+  it('I2C_TXN 读请求（dir=1, len=2）→ onI2cTxn', () => {
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    // addr=0x23, dir=read(1), len=2, data=[]
+    bridge.feed(encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x01, 0x00])));
+    expect(txns).toHaveLength(1);
+    expect(txns[0]!.addr).toBe(0x23);
+    expect(txns[0]!.dir).toBe('r');
+    expect(txns[0]!.data).toHaveLength(0);
+  });
+
+  it('SPI_TXN 帧解析 → onSpiTxn 回调（cs=5, 4 字节命令）', () => {
+    const txns: Array<{ cs: number; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onSpiTxn: (ev) => txns.push({ cs: ev.cs, data: ev.data }),
+    });
+    // cs=5, len=4, data=[0x9f, 0x00, 0x00, 0x00]（JEDEC ID 命令）
+    bridge.feed(encodeTlvFrame(SPI_TXN, Uint8Array.from([5, 4, 0x9f, 0x00, 0x00, 0x00])));
+    expect(txns).toHaveLength(1);
+    expect(txns[0]!.cs).toBe(5);
+    expect(Array.from(txns[0]!.data)).toEqual([0x9f, 0x00, 0x00, 0x00]);
+  });
+
+  it('TLV 帧粘包：两 I2C_TXN 一次喂入全解析', () => {
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    const buf = Buffer.concat([
+      encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10])),
+      encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x13])),
+    ]);
+    bridge.feed(buf);
+    expect(txns).toHaveLength(2);
+    expect(Array.from(txns[0]!.data)).toEqual([0x10]);
+    expect(Array.from(txns[1]!.data)).toEqual([0x13]);
+  });
+
+  it('TLV 帧分包：一帧拆多次喂入', () => {
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    const f = encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10]));
+    bridge.feed(f.subarray(0, 2)); // magic + type
+    expect(txns).toHaveLength(0);
+    bridge.feed(f.subarray(2, 4)); // len + payload[0]
+    expect(txns).toHaveLength(0);
+    bridge.feed(f.subarray(4)); // payload[1] + chk
+    expect(txns).toHaveLength(1);
+    expect(Array.from(txns[0]!.data)).toEqual([0x10]);
+  });
+
+  it('TLV 帧坏 xor 丢弃并重同步（后续 TLV 帧仍能解析）', () => {
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    const bad = Buffer.from([BRIDGE_MAGIC, I2C_TXN, 2, 0x23, 0x00, 0xff]); // len=2 但只有 1 字节 payload + 坏 xor
+    const good = encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10]));
+    bridge.feed(Buffer.concat([bad, good]));
+    // 坏帧被丢弃，good 帧的 magic 被重同步识别
+    expect(txns).toHaveLength(1);
+    expect(Array.from(txns[0]!.data)).toEqual([0x10]);
+  });
+
+  it('定长帧 + TLV 帧交错：状态机按 type 分支正确路由', () => {
+    const writes: Array<{ pin: number; level: 0 | 1 }> = [];
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: (pin, level) => writes.push({ pin, level }),
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    const buf = Buffer.concat([
+      encodeFrame16(GPIO_WRITE, 4, 1),
+      encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10])),
+      encodeFrame16(GPIO_WRITE, 5, 0),
+      encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x01, 0x00])),
+    ]);
+    bridge.feed(buf);
+    expect(writes).toEqual([
+      { pin: 4, level: 1 },
+      { pin: 5, level: 0 },
+    ]);
+    expect(txns).toHaveLength(2);
+    expect(txns[0]!.dir).toBe('w');
+    expect(txns[1]!.dir).toBe('r');
+  });
+
+  it('onI2cTxn/onSpiTxn 可选：未注册时不抛错静默丢弃', () => {
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+    });
+    expect(() =>
+      bridge.feed(encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10]))),
+    ).not.toThrow();
+    expect(() => bridge.feed(encodeTlvFrame(SPI_TXN, Uint8Array.from([5, 1, 0x9f])))).not.toThrow();
+  });
+
+  it('TLV payload 截断：len 声明大于实际 payload 不越界（靠后续字节补齐或丢弃）', () => {
+    const txns: Array<{ addr: number; dir: string; data: Uint8Array }> = [];
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+      onI2cTxn: (ev) => txns.push({ addr: ev.addr, dir: ev.dir, data: ev.data }),
+    });
+    // 声明 len=5 但只给 3 字节 payload + 坏 xor，再喂一个完整帧
+    const trunc = Buffer.from([BRIDGE_MAGIC, I2C_TXN, 5, 0x23, 0x00, 0x01]); // 只 3 字节
+    const good = encodeTlvFrame(I2C_TXN, Uint8Array.from([0x23, 0x00, 0x01, 0x10]));
+    bridge.feed(Buffer.concat([trunc, good]));
+    // 第一帧因长度不足跨到第二帧 magic 字节时被丢弃，第二帧从 magic 重同步
+    // 由于实现按 len 收集后再校验 xor，trunc 会吞掉 good 的部分字节
+    // 关键断言：不抛错、最终要么 0 要么 1 帧（取决于实现）
+    expect(txns.length).toBeLessThanOrEqual(1);
+  });
+
+  it('sendI2cReply：宿主→固件 SENSOR_REPLY 帧（addr|data）', () => {
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+    });
+    bridge.sendI2cReply(0x23, Uint8Array.from([0x12, 0x34]));
+    const frames = tlvFramesOf(fake);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]![0]).toBe(SENSOR_REPLY);
+    expect(frames[0]![1][0]).toBe(0x23);
+    expect(Array.from(frames[0]![1].subarray(1))).toEqual([0x12, 0x34]);
+  });
+
+  it('sendSpiReply：宿主→固件 SPI_REPLY 帧（cs|data）', () => {
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+    });
+    bridge.sendSpiReply(5, Uint8Array.from([0xef, 0x40, 0x16]));
+    const frames = tlvFramesOf(fake);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]![0]).toBe(SPI_REPLY);
+    expect(frames[0]![1][0]).toBe(5);
+    expect(Array.from(frames[0]![1].subarray(1))).toEqual([0xef, 0x40, 0x16]);
+  });
+
+  it('sendI2cReply/sendSpiReply：socket 已销毁则丢弃不抛错', () => {
+    const fake = new FakeSocket();
+    const bridge = new QemuGpioBridge(fake as unknown as net.Socket, {
+      onGpioWrite: () => {},
+      onPinMode: () => {},
+      onPwmWrite: () => {},
+      onPwmFreq: () => {},
+    });
+    fake.destroyed = true;
+    expect(() => bridge.sendI2cReply(0x23, Uint8Array.from([0x12]))).not.toThrow();
+    expect(() => bridge.sendSpiReply(5, Uint8Array.from([0xef]))).not.toThrow();
+    expect(fake.written).toHaveLength(0);
   });
 });

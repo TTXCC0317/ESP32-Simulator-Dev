@@ -1,0 +1,8 @@
+{
+  "exampleId": "dht22-basic",
+  "durationMs": 4000,
+  "input": [],
+  "expect": {
+    "serialContainsAll": ["TEMP: 22.0", "HUM: 50.0"]
+  }
+}

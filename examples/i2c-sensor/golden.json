@@ -1,0 +1,8 @@
+{
+  "exampleId": "i2c-sensor",
+  "durationMs": 4000,
+  "input": [],
+  "expect": {
+    "serialContainsAll": ["LUX: 100"]
+  }
+}
