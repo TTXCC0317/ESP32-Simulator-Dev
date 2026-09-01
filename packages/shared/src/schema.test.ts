@@ -162,6 +162,7 @@ describe('serverMsgSchema（03-§2.4）', () => {
       'spi.txn',
       'sensor.data',
       'fb.update',
+      'neopixel.write',
       'log',
       'error.ack',
       'build.progress',

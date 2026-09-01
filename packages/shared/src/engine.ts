@@ -7,7 +7,15 @@ import type { PartId } from './circuit';
  */
 
 export type EngineEventType =
-  'gpio.write' | 'pwm.duty' | 'uart.rx' | 'i2c.txn' | 'spi.txn' | 'fb.update' | 'log' | 'state';
+  | 'gpio.write'
+  | 'pwm.duty'
+  | 'uart.rx'
+  | 'i2c.txn'
+  | 'spi.txn'
+  | 'fb.update'
+  | 'neopixel.write'
+  | 'log'
+  | 'state';
 
 export type InputEventType = 'pin.level' | 'analog.value' | 'sensor.data' | 'uart.tx' | 'key.event';
 
@@ -18,6 +26,7 @@ export const engineEventTypeSchema = z.enum([
   'i2c.txn',
   'spi.txn',
   'fb.update',
+  'neopixel.write',
   'log',
   'state',
 ]);
@@ -40,6 +49,7 @@ export interface EngineEventMap {
   'i2c.txn': { addr: number; dir: 'r' | 'w'; data: Uint8Array; seq: number };
   'spi.txn': { cs: number; data: Uint8Array; seq: number };
   'fb.update': { partId: PartId; rect: [number, number, number, number]; data: Uint8Array };
+  'neopixel.write': { partId: PartId; pin: number; pixels: Uint8Array };
   log: { level: 'info' | 'warn' | 'error'; text: string };
   state: { status: EngineStatus; error?: string };
 }

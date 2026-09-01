@@ -156,6 +156,17 @@ export const fbUpdateSchema = z.object({
   }),
 });
 
+/** M9 NeoPixel 像素帧（WS 层） — 引擎B glue 或引擎A RMT shim 触发 */
+export const neopixelWriteSchema = z.object({
+  type: z.literal('neopixel.write'),
+  payload: z.object({
+    partId: z.string().min(1),
+    pin: z.number().int().min(0).max(255),
+    /** RGB 像素数组，长度必须是 3×numPixels（06-§3 单帧 ≤768B = 256 灯 × 3B） */
+    pixels: z.array(z.number().int().min(0).max(255)).max(768),
+  }),
+});
+
 export const serverLogSchema = z.object({
   type: z.literal('log'),
   payload: z.object({ level: z.enum(['info', 'warn', 'error']), text: z.string() }),
@@ -197,6 +208,7 @@ export const serverMsgSchema = z.discriminatedUnion('type', [
   spiTxnSchema,
   sensorDataSchema,
   fbUpdateSchema,
+  neopixelWriteSchema,
   serverLogSchema,
   errorAckSchema,
   buildProgressSchema,
