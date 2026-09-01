@@ -9,3 +9,11 @@ If:
   PathMatch: (.*/)?bridge-glue/.*
 Diagnostics:
   Suppress: ['*']
+
+# examples/ 下的 .ino 文件是 Arduino sketch，由 arduino-cli 工具链编译，
+# 宿主机 clangd 没有对应的 compile_commands.json → 报 "Unable to handle compilation"
+# 误报（sketch 已在 Golden 引擎B 全流程验证编译运行通过）。
+If:
+  PathMatch: (.*/)?examples/.*\.ino$
+Diagnostics:
+  Suppress: ['*']
